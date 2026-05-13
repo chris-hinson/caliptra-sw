@@ -18,6 +18,7 @@ caliptra-auth-man-types.workspace = true
 caliptra-builder.workspace = true
 caliptra-coverage.workspace = true
 caliptra-drivers = { workspace = true, features = ["fips-test-hooks"] }
+caliptra-dpe.workspace = true
 caliptra-hw-model-types.workspace = true
 caliptra-hw-model.workspace = true
 caliptra-image-crypto.workspace = true
@@ -27,9 +28,8 @@ caliptra-image-gen.workspace = true
 caliptra-image-types.workspace = true
 caliptra-image-verify = { workspace = true, default-features = false }
 caliptra-runtime = { workspace = true, default-features = false }
-caliptra_common = { workspace = true, default-features = false }
+caliptra-common = { workspace = true, default-features = false }
 der.workspace = true
-dpe.workspace = true
 elf.workspace = true
 hex.workspace = true
 hkdf.workspace = true
@@ -41,7 +41,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 sha3.workspace = true
-ureg.workspace = true
+caliptra-ureg.workspace = true
 zerocopy.workspace = true
 hpke = { version = "0.12.0", features = ["p384"] }
 p384.workspace = true
@@ -56,6 +56,7 @@ fpga_realtime = ["caliptra-hw-model/fpga_realtime"]
 fpga_subsystem = ["caliptra-hw-model/fpga_subsystem"]
 itrng = ["caliptra-hw-model/itrng"]
 ocp-lock = ["caliptra-hw-model/ocp-lock"]
+cfi = ["caliptra-runtime/cfi", "caliptra-dpe/cfi"]
 verilator = ["caliptra-hw-model/verilator"]
 fips_self_test = ["caliptra-runtime/fips_self_test"]
 test_env_immutable_rom = []

@@ -54,22 +54,27 @@ Following are the main FUSE & Architectural Registers used by the Caliptra ROM f
 ### Fuse Registers
 | Register                        | Width (bits) | Description                                             |
 | :------------------------------ | :------------|  :----------------------------------------------------- |
-| FUSE_UDS_SEED                   | 512          | Obfuscated UDS                                          |
-| FUSE_FIELD_ENTROPY              | 256          | Obfuscated Field Entropy                                |
-| FUSE_VENDOR_PK_HASH             | 384          | Hash of the ECC and LMS or MLDSA Manufacturer Public Key Descriptors   |
+| FUSE_UDS_SEED                   | 512          | Obfuscated UDS. Stored as `[u32; 16]` — see [Fuse value byte ordering](#fuse-value-byte-ordering). |
+| FUSE_FIELD_ENTROPY              | 256          | Obfuscated Field Entropy. Stored as `[u32; 8]` — see [Fuse value byte ordering](#fuse-value-byte-ordering). |
+| FUSE_VENDOR_PK_HASH             | 384          | Hash of the ECC and LMS or MLDSA Manufacturer Public Key Descriptors. Stored as `[u32; 12]` — see [Public key hash byte ordering](#public-key-hash-byte-ordering-dword-reversal). |
 | FUSE_ECC_REVOCATION             | 4            | Manufacturer ECC Public Key Revocation Mask             |
 | FUSE_LMS_REVOCATION             | 32           | Manufacturer LMS Public Key Revocation Mask             |
 | FUSE_MLDSA_REVOCATION           | 4            | Manufacturer MLDSA Public Key Revocation Mask           |
-| FUSE_FIRMWARE_SVN               | 128          | Firmware Security Version Number                        |
+| FUSE_FIRMWARE_SVN               | 128          | Firmware Security Version Number. 128-bit bitmap — see [Fuse value byte ordering](#fuse-value-byte-ordering). |
 | FUSE_ANTI_ROLLBACK_DISABLE      | 1            | Disable SVN checking for firmware when bit is set       |
 | FUSE_IDEVID_CERT_ATTR           | 768          | FUSE containing information for generating IDEVID CSR  <br> **Word 0:bits[0-2]**: ECDSA X509 Key Id Algorithm (3 bits) 0: SHA1, 1: SHA256, 2: SHA384, 3: SHA512, 4: Fuse <br> **Word 0:bits[3-5]**: MLDSA X509 Key Id Algorithm (3 bits) 0: SHA1, 1: SHA256, 2: SHA384, 3: SHA512, 4: Fuse <br> **Word 1,2,3,4,5**: ECDSA Subject Key Id <br> **Word 6,7,8,9,10**: MLDSA Subject Key Id <br> **Words 11**: UEID type as defined in the [IETF EAT specification](https://www.rfc-editor.org/rfc/rfc9711.html#section-4.2.1.1) <br> **Words 12,13,14,15**: Manufacturer Serial Number |
-| FUSE_MANUF_DEBUG_UNLOCK_TOKEN    | 512           | SHA-512 digest of secret value for manufacturing debug unlock authorization |
+| FUSE_MANUF_DEBUG_UNLOCK_TOKEN    | 512           | SHA-512 digest of secret value for manufacturing debug unlock authorization. Stored as `[u32; 16]` — see [Fuse value byte ordering](#fuse-value-byte-ordering). |
 | FUSE_PQC_KEY_TYPE                | 2             | One-hot encoded selection of PQC key type for firmware validation. <br> **Bit 0**: MLDSA <br> **Bit 1**: LMS |
+| FUSE_HEK_SEED                   | 256           | OCP HEK Seed. Stored as `[u32; 8]` — see [Fuse value byte ordering](#fuse-value-byte-ordering). |
+| FUSE_SOC_MANIFEST_SVN            | 128           | SoC Manifest Security Version Number. 128-bit bitmap — see [Fuse value byte ordering](#fuse-value-byte-ordering). |
+| FUSE_SOC_MANIFEST_MAX_SVN        | 8             | Maximum SoC Manifest Security Version Number            |
+| FUSE_SOC_STEPPING_ID             | 16            | SoC Stepping Identifier                                 |
+| FUSE_IDEVID_MANUF_HSM_ID         | 128           | Manufacturer HSM Identifier. Stored as `[u32; 4]` — see [Fuse value byte ordering](#fuse-value-byte-ordering). |
 
 ### Architectural Registers
 | Register                        | Width (bits) | Description                                             |
 | :------------------------------ | :------------|  :----------------------------------------------------- |
-| CPTRA_OWNER_PK_HASH             | 384          | Owner ECC and LMS or MLDSA Public Key Hash              |
+| CPTRA_OWNER_PK_HASH             | 384          | Owner ECC and LMS or MLDSA Public Key Hash. Stored as `[u32; 12]` — see [Public key hash byte ordering](#public-key-hash-byte-ordering-dword-reversal). |
 
 ### Entropy Source Configuration Registers
 
@@ -89,6 +94,23 @@ The ROM configures the entropy source (CSRNG) during initialization using the fo
 - These configuration values are stored in persistent storage after first read to prevent malicious modification (reloaded on cold reset).
 - In debug mode (`debug_locked == false`), entropy source configuration registers remain unlocked for characterization.
 - In production mode, ROM locks the entropy source configuration after programming to prevent modification.
+
+### Stable Owner Key Root Derivation
+
+The Stable Owner Key feature is only available in subsystem mode when OCP LOCK is disabled and the following subsystem strap is set:
+
+| Register                         | Field/Bits | Description                                             |
+| :------------------------------- | :--------- | :------------------------------------------------------ |
+| SS_STRAP_GENERIC[3]              | [0]        | Stable Owner Key enable. When set to 1, ROM derives the Stable Owner Root Key from the HEK seed and allows `CM_DERIVE_STABLE_KEY` with `key_type = OwnerKey` when the other availability requirements are met. When clear, Stable Owner Key derivation is disabled. |
+
+When the feature is available, ROM derives the Stable Owner Root Key during the IDevID stage before clearing DOE secrets:
+
+1. DOE decrypts the obfuscated HEK seed into `KEY_ID_HEK_SEED` (`KeyId14`) with HMAC block usage.
+2. HKDF-Extract uses HMAC-SHA512 with salt `stable_owner_root_key`, zero-padded to 64 bytes, and reads `KEY_ID_HEK_SEED` as HMAC block data. The resulting PRK overwrites `KEY_ID_HEK_SEED` with HMAC key usage.
+3. HKDF-Expand uses HMAC-SHA512 with the PRK and label `stable_owner_root_key` to populate `KEY_ID_STABLE_OWNER` (`KeyId15`) with AES key usage.
+4. ROM write-locks `KEY_ID_STABLE_OWNER` and erases the temporary `KEY_ID_HEK_SEED` slot.
+
+If subsystem mode is not active, the strap is clear, or OCP LOCK is enabled, ROM skips this derivation and `CM_DERIVE_STABLE_KEY` with `key_type = OwnerKey` is unavailable.
 
 For a comprehensive overview of the SOC interface registers, please refer to the following link::
 https://chipsalliance.github.io/caliptra-rtl/main/external-regs/?p=caliptra_top_reg.generic_and_fuse_reg
@@ -150,7 +172,7 @@ It is the unsigned portion of the manifest. Preamble contains the signing public
 | Key Descriptor Version | 2 | Version of the Key Descriptor. The value must be 0x1 for Caliptra 2.x |
 | Reserved | 1 | Reserved  |
 | Key Hash Count | 1 | Number of valid public key hashes  |
-| Public Key Hash(es) | 48 * n | List of valid and invalid (if any) SHA2-384 public key hashes. ECDSA: n = 4 |
+| Public Key Hash(es) | 48 * n | List of valid and invalid (if any) SHA2-384 public key hashes. ECDSA: n = 4. Each hash is stored in reversed-dword format (see [Public key hash byte ordering](#public-key-hash-byte-ordering-dword-reversal)). |
 
 #### PQC Manufacturer Public Key Descriptor
 
@@ -159,7 +181,7 @@ It is the unsigned portion of the manifest. Preamble contains the signing public
 | Key Descriptor Version | 2 | Version of the Key Descriptor. The value must be 0x1 for Caliptra 2.x |
 | Key Type | 1 | Type of the key in the descriptor <br>  0x1 - MLDSA <br> 0x3 - LMS |
 | Key Hash Count | 1 | Number of valid public key hashes  |
-| Public Key Hash(es) | 48 * n | List of valid and invalid (if any) SHA2-384 public key hashes. LMS: n = 32, MLDSA: n = 4 |
+| Public Key Hash(es) | 48 * n | List of valid and invalid (if any) SHA2-384 public key hashes. n = 32 for both LMS and MLDSA (the struct always allocates 32 slots; for MLDSA only the first 4 are populated and the rest are zero). Each hash is stored in reversed-dword format (see [Public key hash byte ordering](#public-key-hash-byte-ordering-dword-reversal)). |
 
 #### Header
 
@@ -361,10 +383,10 @@ The following flows are conducted when the ROM is operating in the production mo
 | Unlock Level             | 1            | Debug unlock Level (Number 1-8).                                                      |
 | Reserved                 | 3            | Reserved field.                                                                       |
 | Challenge                | 48           | Random number sent in `AUTH_DEBUG_UNLOCK_CHALLENGE` mailbox command payload.          |
-| ECC Public Key           | 96           | ECC P-384 public key used to verify the Message Signature <br> **X-Coordinate:** Public Key X-Coordinate (48 bytes, big endian) <br> **Y-Coordinate:** Public Key Y-Coordinate (48 bytes, big endian)                         |
-| MLDSA Public Key         | 2592         | MLDSA-87 public key used to verify the Message Signature.                             |
-| ECC Signature            |  96          | ECC P-384 signature of the Message hashed using SHA2-384. <br> **R-Coordinate:** Random Point (48 bytes) <br> **S-Coordinate:** Proof (48 bytes).                                                                                   |
-| MLDSA Signature          | 4628         | MLDSA signature of the Message hashed using SHA2-512. (4627 bytes + 1 Reserved byte). |
+| ECC Public Key           | 96           | ECC P-384 public key used to verify the Message Signature <br> **X-Coordinate:** Public Key X-Coordinate (48 bytes) <br> **Y-Coordinate:** Public Key Y-Coordinate (48 bytes). See [Byte order of cryptographic fields](../../runtime/README.md#byte-order-of-cryptographic-fields). |
+| MLDSA Public Key         | 2592         | MLDSA-87 public key used to verify the Message Signature. See [Byte order of cryptographic fields](../../runtime/README.md#byte-order-of-cryptographic-fields). |
+| ECC Signature            |  96          | ECC P-384 signature of the Message hashed using SHA2-384. <br> **R-Coordinate:** Random Point (48 bytes) <br> **S-Coordinate:** Proof (48 bytes). See [Byte order of cryptographic fields](../../runtime/README.md#byte-order-of-cryptographic-fields). |
+| MLDSA Signature          | 4628         | MLDSA-87 signature of the Message hashed using SHA2-512 (4627 bytes + 1 Reserved byte). See [Byte order of cryptographic fields](../../runtime/README.md#byte-order-of-cryptographic-fields). |
 
 7. On receiving this payload, ROM performs the following validations:
     - Ensures the value in the `Length` field matches the size of the payload.
@@ -372,7 +394,7 @@ The following flows are conducted when the ROM is operating in the production mo
     - Calculates the address of the public key hash fuse as follows: <br>
         **SS_PROD_DEBUG_UNLOCK_AUTH_PK_HASH_REG_BANK_OFFSET register value + ( (Debug Unlock Level - 1) * SHA2-384 hash size (48 bytes) )**
     - Retrieves the SHA2-384 hash (48 bytes) from the calculated address using DMA assist.
-    - Computes the SHA2-384 hash of the message formed by concatenating the ECC and MLDSA public keys in the payload.
+    - Computes the SHA2-384 hash of the message formed by concatenating the ECC and MLDSA public keys in the payload. See [Production debug unlock public key hashes: byte ordering](#production-debug-unlock-public-key-hashes-byte-ordering) for the exact byte order and fuse programming details.
     - Compares the retrieved and computed hashes. It the comparison fails, the ROM blocks the debug unlock request by setting the registers outlined in step 3.
     - Upon hash comparison failure, the ROM exits the payload validation flow and completes the mailbox command.
 
@@ -565,6 +587,102 @@ Initial Device ID Layer is used to generate Manufacturer CDI & Private Keys. Thi
  | 🔒IDevID Cert MLDSA Signature |
  | 🔒IDevID MLDSA Pub Key        |
 
+#### UEID (Unique Endpoint Identifier)
+
+The UEID is a 17-byte identifier that is embedded (as an X.509 extension) in the
+IDevID CSR, the LDevID certificate, and the FMC Alias certificate. Its value is
+derived entirely from fuses.
+
+##### Source fuses
+
+The UEID is assembled from 5 consecutive 32-bit words of the
+`FUSE_IDEVID_CERT_ATTR` fuse bank (see the [Fuse Registers](#fuse-registers)
+table):
+
+| Fuse word | `IdevidCertAttr` variant      | Usage in UEID                           |
+|-----------|-------------------------------|-----------------------------------------|
+| 11        | `UeidType`                    | UEID type byte (see RFC 9711 §4.2.1.1)  |
+| 12        | `ManufacturerSerialNumber1`   | First 4 bytes of the endpoint serial    |
+| 13        | `ManufacturerSerialNumber2`   | Next 4 bytes of the endpoint serial     |
+| 14        | `ManufacturerSerialNumber3`   | Next 4 bytes of the endpoint serial     |
+| 15        | `ManufacturerSerialNumber4`   | Last 4 bytes of the endpoint serial     |
+
+Only the low byte of word 11 is used; the high 3 bytes of that word are
+discarded. Each of the four serial-number words is written to the UEID buffer
+in **little-endian** order (the natural byte order of the u32 register).
+
+##### Byte layout
+
+```
+     byte 0      byte 1 ─ byte 4   byte 5 ─ byte 8   byte 9 ─ byte 12   byte 13 ─ byte 16
+  ┌──────────┐ ┌────────────────┐ ┌────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+  │ UeidType │ │ MfgSerialNum1  │ │ MfgSerialNum2  │ │  MfgSerialNum3  │ │  MfgSerialNum4  │
+  │ (byte 0) │ │  (LE u32)      │ │  (LE u32)      │ │   (LE u32)      │ │   (LE u32)      │
+  └──────────┘ └────────────────┘ └────────────────┘ └─────────────────┘ └─────────────────┘
+```
+
+This assembly is implemented in `caliptra_drivers::FuseBank::ueid` in
+`drivers/src/fuse_bank.rs`, returning a `[u8; 17]`.
+
+##### Placement in the certificate / CSR
+
+The 17-byte UEID is placed in the TCG DICE "Ueid" X.509 extension (OID
+`2.23.133.5.4.4`, not marked critical). The extension's `extnValue`
+`OCTET STRING` contains a DER-encoded `SEQUENCE { ueid OCTET STRING }`, as
+defined by the TCG DICE specification. The DER bytes written into the TBS
+template are:
+
+| DER bytes                 | Meaning                                                 |
+|---------------------------|---------------------------------------------------------|
+| `30 1F`                   | `SEQUENCE`, length 31 — the `Extension`                 |
+| `06 06 67 81 05 05 04 04` | `OID 2.23.133.5.4.4` (`tcg-dice-Ueid`)                  |
+| `04 15`                   | `OCTET STRING`, length 21 — the `extnValue` wrapper     |
+| `30 13`                   |   inner `SEQUENCE`, length 19 — the `TcgUeid` structure |
+| `04 11`                   |     inner `OCTET STRING`, length 17 — the UEID value    |
+| `XX XX … XX` (17 B)       |       the 17 UEID bytes assembled above                 |
+
+The template slot for the 17 UEID bytes sits at a fixed offset in the TBS
+template (e.g. `UEID_OFFSET = 312` for `InitDevIdCsrTbsEcc384`); the ROM copies
+the UEID returned by `FuseBank::ueid` directly into that slot with no further
+transformation. See `x509/gen/src/x509.rs::make_tcg_ueid_ext` for the generator
+and `x509/build/*` for the resulting pre-baked templates.
+
+##### End-to-end example
+
+Given the following example fuse values (as programmed by the integration test
+`cert_test_with_ueid` in `rom/dev/tests/rom_integration_tests/test_image_validation.rs`):
+
+| Fuse word | Field                          | Value         |
+|-----------|--------------------------------|---------------|
+| 11        | `UeidType`                     | `0x0000_0001` |
+| 12        | `ManufacturerSerialNumber1`    | `0x0403_0201` |
+| 13        | `ManufacturerSerialNumber2`    | `0x0807_0605` |
+| 14        | `ManufacturerSerialNumber3`    | `0x0C0B_0A09` |
+| 15        | `ManufacturerSerialNumber4`    | `0x100F_0E0D` |
+
+Step-by-step:
+
+1. `FuseBank::ueid` reads the five fuse words and takes the low byte of word 11:
+   `ueid_type = 0x01`.
+2. Each serial-number word is converted to little-endian bytes:
+   - `0x04030201 → 01 02 03 04`
+   - `0x08070605 → 05 06 07 08`
+   - `0x0C0B0A09 → 09 0A 0B 0C`
+   - `0x100F0E0D → 0D 0E 0F 10`
+3. The 17-byte UEID is:
+   `01 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10`
+   (byte 0 is the type; bytes 1–16 are the endpoint serial).
+4. The UEID is wrapped in the DER framing shown above and emitted verbatim in
+   the IDevID CSR, LDevID certificate, and FMC Alias certificate. The resulting
+   bytes on the wire for the Ueid extension are:
+   `30 1F 06 06 67 81 05 05 04 04 04 15 30 13 04 11 01 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10`.
+
+The `cert_test_with_ueid` test programs exactly these fuses, boots the ROM,
+retrieves the IDevID ECC CSR, LDevID cert, and FMC Alias cert from the UART
+log, and asserts that the hex-encoded bytes
+`010102030405060708090A0B0C0D0E0F10` appear in all three — confirming both the
+fuse-to-UEID assembly and the DER placement described here.
+
 ### Local Device ID DICE layer
 
 Local Device ID Layer derives the Owner CDI, ECC and MLDSA Keys. This layer represents the owner DICE Identity as it is mixed with the Field Entropy programmed by the Owner.
@@ -753,7 +871,7 @@ Command Code: `0x434D_5348` ("CMSH")
 | -------------- | ------------- | ---------------
 | chksum         | u32           | Checksum over other input arguments, computed by the caller. Little endian.
 | hash_algorithm | u32           | Hash algorithm: 1 = SHA-384, 2 = SHA-512. Value 0 is reserved and will return an error.
-| input_size     | u32           | Size of input data in bytes. Maximum 262,132 bytes (256 KB minus 12-byte header overhead) in passive mode, and 16,372 bytes in subsystem mode for 2.1 (16 KB minus overhead).
+| input_size     | u32           | Size of input data in bytes. Maximum 16,372 bytes in subsystem mode (16 KB minus 12-byte header overhead). Passive mode supports up to 262,132 bytes (256 KB minus overhead) when using a passive-mode mailbox.
 | input          | u8[input_size]| Input data to hash. Variable size up to the mailbox capacity.
 
 *Table: `CM_SHA` output arguments*
@@ -1151,11 +1269,12 @@ The following are the pre-conditions that should be satisfied:
 ### Preamble validation: Manufacturing key validation
 
 - fuse_ecc_revocation serves as the bitmask for revoking ECC keys.
-  - If bit-n is set, the nth key is disabled. All other higher bits that are zeros indicate the keys are still enabled.
+  - If bit-n is set, the nth key is disabled. All other bits that are zeros indicate the keys are still enabled.
   - If all the bits are zeros, all ECC keys remain enabled.
 - Ensure that the Active Key Index in the preamble is not disabled by the fuse_ecc_revocation fuse.
   - If the key is disabled, the validation process fails.
-- Repeat the above procedure for LMS or MLDSA keys using the fuse_lms_revocation or fuse_mldsa_revocation fuses, respectively, for key revocation.
+  - **Note: The last key index is never revoked, regardless of the fuse value.**
+- Repeat the above procedure for LMS or MLDSA keys using the fuse_lms_revocation or fuse_mldsa_revocation fuses, respectively, for key revocation. The last key index for PQC keys is also never revoked.
 
 ### Preamble validation: Validate the Owner key
 
@@ -1164,6 +1283,751 @@ The following are the pre-conditions that should be satisfied:
 - The validation process for owner public keys involves generating a SHA2-384 hash from the owner public keys within the preamble and comparing it to the hash stored in the fuse_owner_pk_hash register.
 - If the computed hash matches the value in fuse_owner_pk_hash, the owner public keys are deemed valid.
 - If there is a hash mismatch, the image validation process fails.
+
+### Public key hash byte ordering (dword reversal)
+
+**Important:** Hashes and ECC key coordinates stored in the firmware manifest and fuse registers use
+a **reversed-dword format** rather than the standard byte order defined by the SHA specification.
+
+In standard byte order, a SHA2-384 hash is a sequence of 48 bytes exactly as output by tools like
+OpenSSL or Python's `hashlib`. In reversed-dword format, the same 48 bytes are grouped into 12
+four-byte words (dwords) and the bytes within each dword are reversed.
+
+For example, if the standard SHA2-384 hash begins with `b1 7c a8 77 66 66 57 cc d1 00 e6 92 ...`:
+
+| Standard byte order  | → | Reversed-dword format |
+|----------------------|---|-----------------------|
+| `b1 7c a8 77`        |   | `77 a8 7c b1`         |
+| `66 66 57 cc`        |   | `cc 57 66 66`         |
+| `d1 00 e6 92`        |   | `92 e6 00 d1`         |
+| ...                   |   | ...                   |
+
+This reversed-dword format applies to:
+- **Individual public key hashes** in the ECC and PQC key descriptors within the preamble
+- **FUSE_VENDOR_PK_HASH** and **CPTRA_OWNER_PK_HASH** fuse/register values (which are `[u32; 12]` arrays)
+- **ECC public key coordinates** (X and Y), which are stored as `[u32; 12]` arrays in the preamble
+
+Note: LMS public key fields (`tree_type`, `otstype`, `id`, `digest`) follow the LMS specification
+encoding and are **not** subject to dword reversal. MLDSA public keys are stored as raw byte arrays
+and are also **not** subject to dword reversal.
+
+For a detailed description of byte ordering conventions for all mailbox cryptographic fields
+(including ECC, ML-DSA, and SHA digest fields with OpenSSL examples), see the
+[Byte order of cryptographic fields](../../runtime/README.md#byte-order-of-cryptographic-fields)
+section in the Runtime README.
+
+### Computing public key hashes: step-by-step example
+
+The following example walks through the computation of the **vendor PK descriptor hash**
+using the test public keys from `image/fake-keys/src/lib.rs` with PQC key type **LMS (type 3)**.
+
+#### Step 1: Hash each vendor ECC public key
+
+Each ECC-384 public key has X and Y coordinates, each stored as `[u32; 12]`. To hash a key,
+serialize the struct to 96 bytes by writing each `u32` word in reversed-dword format, then
+compute SHA2-384 of those 96 bytes.
+
+**ECC Key 0:**
+```
+X (standard byte order): c69fe67f 97ea3e42 21a7a603 6c2e070d 1657327b c3f1e7c1
+                          8dccb9e4 ffda5c3f 4db0a1c0 567e0973 17bf4484 39696a07
+Y (standard byte order): c126b913 5fc82572 8f1cd403 19109430 994fe3e8 74a8b026
+                          be14794d 27789964 7735fde8 328afd84 cd4d4aa8 72d40b42
+
+X (reversed-dword):      7fe69fc6 423eea97 03a6a721 0d072e6c 7b325716 c1e7f1c3
+                          e4b9cc8d 3f5cdaff c0a1b04d 73097e56 8444bf17 076a6939
+Y (reversed-dword):      13b926c1 7225c85f 03d41c8f 30941019 e8e34f99 26b0a874
+                          4d7914be 64997827 e8fd3577 84fd8a32 a84a4dcd 420bd472
+
+Input to SHA384 = X_reversed || Y_reversed (96 bytes)
+SHA384 (standard):       84facd34 227de869 1fbb7d33 49306e0f 250a3659 53a6cc6b
+                          629d4616 32f73cfd 768152bb 8a03a255 5a1b1f1f c3923faa
+SHA384 (reversed-dword): 34cdfa84 69e87d22 337dbb1f 0f6e3049 59360a25 6bcca653
+                          16469d62 fd3cf732 bb528176 55a2038a 1f1f1b5a aa3f92c3
+```
+
+**ECC Key 1:**
+```
+X (standard): a6309750 f0a05ddb 956a7f86 2812ec4f ec454e95 3b53dbfb
+              9eb54140 15ea7507 084af93c b7fa33fe 51811ad5 e754232e
+Y (standard): ef5a5987 7a0ce0be 2621d2a9 8bf3c5df af7b3d6d 97f24183
+              a4a42038 58c39b86 272ef548 e572b937 1ecf1994 1b8d4ea7
+
+SHA384 (standard):       fe89195f 7fab8ebb 2818d935 837493c2 378525ef 686ed220
+                          09b9a399 f23f1f42 2f5ae1f3 ba1c3083 1a68a456 9c01fc96
+SHA384 (reversed-dword): 5f1989fe bb8eab7f 35d91828 c2937483 ef258537 20d26e68
+                          99a3b909 421f3ff2 f3e15a2f 83301cba 56a4681a 96fc019c
+```
+
+**ECC Key 2:**
+```
+X (standard): a0d25693 c4251e48 185615b0 a6c27f6d e62c39f5 a9a32f75
+              9553226a 4d1926c1 7928910f b7adc1b6 89996733 10134881
+Y (standard): bbdf72d7 07c08100 d54fcdad b1567bb0 0522762b 76b8dc4a
+              846c175a 3fbd0501 9bdc8118 4be5f33c bb21b41d 93a8c523
+
+SHA384 (standard):       f397ba45 b5801ddf b732078d ffdf792f b584a73f b055acaf
+                          ef39f31d 5b88c7d5 2753a45a 0c76b098 90d8e335 7be87f26
+SHA384 (reversed-dword): 45ba97f3 df1d80b5 8d0732b7 2f79dfff 3fa784b5 afac55b0
+                          1df339ef d5c7885b 5aa45327 98b0760c 35e3d890 267fe87b
+```
+
+**ECC Key 3:**
+```
+X (standard): 002a82b6 8e03e9a0 fd3b4c14 ca2cb3e8 14350a71 0e43956d
+              21694fb4 f34485e8 f0e33583 f7ea142d 50e16f8b 0225bb95
+Y (standard): 5802641c 7c45a4a2 408e03a6 a4100a92 50fcc468 d238cd0d
+              449cc3e5 1abc25e7 0b05c426 843dcd6f 944ef6ff fa53ec5b
+
+SHA384 (standard):       8ba8acb6 b98da9dc 8ffce0bc eba86454 4acbbd6e 3f31466e
+                          5d532565 0bfc9e3b c8afb2b5 c33e20f5 06992143 83f33bc1
+SHA384 (reversed-dword): b6aca88b dca98db9 bce0fc8f 5464a8eb 6ebdcb4a 6e46313f
+                          6525535d 3b9efc0b b5b2afc8 f5203ec3 43219906 c13bf383
+```
+
+#### Step 2: Hash each vendor LMS public key
+
+Each LMS public key is a 48-byte struct: `tree_type` (u32), `otstype` (u32), `id` (16 bytes),
+`digest` (24 bytes). The binary serialization is hashed directly.
+
+**LMS Key 0:**
+```
+tree_type=0x0000000c, otstype=0x00000007
+id:     4908a17b cadb1829 1e289058 d5a8e3e8
+digest: 64ad3eb8 be6864f1 7ccda38b de35edaa 6c0da527 645407c6
+
+Serialized (48 bytes): 0000000c 00000007 4908a17b cadb1829 1e289058 d5a8e3e8
+                        64ad3eb8 be6864f1 7ccda38b de35edaa 6c0da527 645407c6
+SHA384 (standard):       fc2c1b6f 56f732d1 fd876f3f ef757cbb a2b1c64b cc148298
+                          d7508262 4bdf27cb 23d6b5b6 7169c46f 50b7fc19 92068fec
+SHA384 (reversed-dword): 6f1b2cfc d132f756 3f6f87fd bb7c75ef 4bc6b1a2 988214cc
+                          628250d7 cb27df4b b6b5d623 6fc46971 19fcb750 ec8f0692
+```
+
+**LMS Key 1:**
+```
+tree_type=0x0000000c, otstype=0x00000007
+id:     7cb5369d 64e4281d 046e977c 70d4d0a3
+digest: 8ea4701d adf7d700 0564b7d6 1d1c9587 9dd6475c 9c3aae0b
+
+SHA384 (standard):       7b5811fd 8d2b0cf8 9851f12d d2a7c239 f4f3abc5 d928dcc0
+                          3b4b891d abbdc67f c7b88436 432e1544 a408bc9c bb503f6b
+SHA384 (reversed-dword): fd11587b f80c2b8d 2df15198 39c2a7d2 c5abf3f4 c0dc28d9
+                          1d894b3b 7fc6bdab 3684b8c7 44152e43 9cbc08a4 6b3f50bb
+```
+
+**LMS Key 2:**
+```
+tree_type=0x0000000c, otstype=0x00000007
+id:     2bbb4b72 c5b41e05 d2fabe76 f41704bd
+digest: dcb53f96 24d4c7b3 c9ae4d4c 0e41e08e 3b159396 0fe6a277
+
+SHA384 (standard):       7e08a494 6933d35a 42c0d7b0 0236b10b db14c100 3f82f6a9
+                          7d401cb8 e420a7fa 5aab12b3 c4e96bec 49aec770 225a8f88
+SHA384 (reversed-dword): 94a4087e 5ad33369 b0d7c042 0bb13602 00c114db a9f6823f
+                          b81c407d faa720e4 b312ab5a ec6be9c4 70c7ae49 888f5a22
+```
+
+**LMS Key 3:**
+```
+tree_type=0x0000000c, otstype=0x00000007
+id:     42cba2e5 575b5235 7ea7aead ef54074c
+digest: 5aa60e27 69251599 3ae8e21f 27ccdded 8ffcd3d2 8efbdec2
+
+SHA384 (standard):       d3734fbc ee2893a3 b1b6519b 6ec78fb8 d7425327 cde1f7aa
+                          23012c64 c635219f d4ab1c4d 1b023252 00042884 2e463dbb
+SHA384 (reversed-dword): bc4f73d3 a39328ee 9b51b6b1 b88fc76e 275342d7 aaf7e1cd
+                          642c0123 9f2135c6 4d1cabd4 5232021b 84280400 bb3d462e
+```
+
+#### Step 3: Build the ECC key descriptor (196 bytes)
+
+Concatenate the 4-byte header with the 4 key hashes (each in reversed-dword format):
+
+```
+Header (4 bytes): 01 00 00 04     (version=1, reserved=0, key_hash_count=4)
+ECC key 0 hash (48 bytes, reversed-dword): 34cdfa84 69e87d22 ... aa3f92c3
+ECC key 1 hash (48 bytes, reversed-dword): 5f1989fe bb8eab7f ... 96fc019c
+ECC key 2 hash (48 bytes, reversed-dword): 45ba97f3 df1d80b5 ... 267fe87b
+ECC key 3 hash (48 bytes, reversed-dword): b6aca88b dca98db9 ... c13bf383
+
+Total: 4 + (4 × 48) = 196 bytes
+```
+
+#### Step 4: Build the PQC (LMS) key descriptor (1540 bytes)
+
+```
+Header (4 bytes): 01 00 03 20     (version=1, key_type=3=LMS, key_hash_count=32)
+LMS key 0 hash (48 bytes, reversed-dword): 6f1b2cfc d132f756 ... ec8f0692
+LMS key 1 hash (48 bytes, reversed-dword): fd11587b f80c2b8d ... 6b3f50bb
+LMS key 2 hash (48 bytes, reversed-dword): 94a4087e 5ad33369 ... 888f5a22
+LMS key 3 hash (48 bytes, reversed-dword): bc4f73d3 a39328ee ... bb3d462e
+  ... (keys 0-3 repeated 8 times to fill all 32 slots)
+
+Total: 4 + (32 × 48) = 1540 bytes
+```
+
+#### Step 5: Compute the vendor PK descriptor hash
+
+```
+Input = ECC descriptor (196 bytes) || PQC descriptor (1540 bytes) = 1736 bytes
+
+SHA384 (standard byte order):
+  b17ca877 666657cc d100e692 6c7206b6 0c995cb6 8992c6c9
+  baefce72 8af05441 dee1ff41 5adfc187 e1e4edb4 d3b2d909
+
+As [u32; 12] fuse register value:
+  [0xb17ca877, 0x666657cc, 0xd100e692, 0x6c7206b6,
+   0x0c995cb6, 0x8992c6c9, 0xbaefce72, 0x8af05441,
+   0xdee1ff41, 0x5adfc187, 0xe1e4edb4, 0xd3b2d909]
+```
+
+### Computing public key hashes: MLDSA step-by-step example
+
+The following example walks through the same computation as the LMS example above, but
+using PQC key type **MLDSA (type 1)** with the test keys from `image/fake-keys/src/lib.rs`.
+
+#### MLDSA Step 1: Hash each vendor ECC public key
+
+The ECC keys and their hashes are identical to the LMS example — see
+[Step 1 above](#step-1-hash-each-vendor-ecc-public-key). The ECC key descriptor is
+independent of the PQC key type.
+
+#### MLDSA Step 2: Hash each vendor MLDSA public key
+
+Each MLDSA-87 public key is a 2592-byte array (`[u32; 648]`). When serialized via
+`as_bytes()`, each `u32` word is written in little-endian byte order — for example, the
+Rust value `0x3bf1c072` becomes bytes `72 c0 f1 3b` in memory. Unlike LMS keys, MLDSA
+keys are not subject to any additional encoding — these raw bytes are hashed directly
+with SHA2-384.
+
+**MLDSA Key 0:**
+```
+Size: 2592 bytes (648 u32 words)
+First 24 bytes: 72c0f13b 7d937e22 69b6988d 6daadc3a e78acd11 940cfc0d ...
+
+SHA384 (standard):       f1097978 0adae470 dcd4eeb8 5749a2e4 2e70c055 ebac46e4
+                          07c2c404 b46473d8 189117ed 8c83dde4 9f941e6a 1b6c6d4c
+SHA384 (reversed-dword): 787909f1 70e4da0a b8eed4dc e4a24957 55c0702e e446aceb
+                          04c4c207 d87364b4 ed179118 e4dd838c 6a1e949f 4c6d6c1b
+```
+
+**MLDSA Key 1:**
+```
+Size: 2592 bytes (648 u32 words)
+First 24 bytes: f432346c 096d0ec9 04f8d925 1512236b e3fd1ccb bda9ed3a ...
+
+SHA384 (standard):       a57b6f71 ffab9844 de49e9f7 ad61476b 7446e140 517d07b1
+                          81447acb a6d7166f 7b89f199 b6e36174 2d0ab01c 540d26de
+SHA384 (reversed-dword): 716f7ba5 4498abff f7e949de 6b4761ad 40e14674 b1077d51
+                          cb7a4481 6f16d7a6 99f1897b 7461e3b6 1cb00a2d de260d54
+```
+
+**MLDSA Key 2:**
+```
+Size: 2592 bytes (648 u32 words)
+First 24 bytes: 2bc91a00 7d3e5a4f e6b3f2ec cb1aaa0d 278d9786 44b25fed ...
+
+SHA384 (standard):       7f2f3c55 e8dd2481 bbee17c1 5d5773a8 01a9c0a6 84b30e47
+                          0ae67ecd 1ec3e7ac 19273c71 feb6bb99 10d26dd0 4ace4298
+SHA384 (reversed-dword): 553c2f7f 8124dde8 c117eebb a873575d a6c0a901 470eb384
+                          cd7ee60a ace7c31e 713c2719 99bbb6fe d06dd210 9842ce4a
+```
+
+**MLDSA Key 3:**
+```
+Size: 2592 bytes (648 u32 words)
+First 24 bytes: 378dcb02 a6db3481 d51e9913 14da1567 a211290e f4c3d02f ...
+
+SHA384 (standard):       79fbeb0a 6ebc354b ccf48dd1 5b6c9142 a62af0c5 198c0de1
+                          365fbcb0 b2463ee5 103ccae3 4504ab83 04b37886 5c9a28ae
+SHA384 (reversed-dword): 0aebfb79 4b35bc6e d18df4cc 42916c5b c5f02aa6 e10d8c19
+                          b0bc5f36 e53e46b2 e3ca3c10 83ab0445 8678b304 ae289a5c
+```
+
+#### MLDSA Step 3: Build the ECC key descriptor (196 bytes)
+
+Same as the LMS example — the ECC descriptor is independent of PQC key type. See
+[Step 3 above](#step-3-build-the-ecc-key-descriptor-196-bytes).
+
+#### MLDSA Step 4: Build the PQC (MLDSA) key descriptor (1540 bytes)
+
+The PQC key descriptor struct always has 32 hash slots (`VENDOR_PQC_MAX_KEY_COUNT`).
+For MLDSA, only 4 keys are populated; the remaining 28 slots are zero-filled.
+
+```
+Header (4 bytes): 01 00 01 04     (version=1, key_type=1=MLDSA, key_hash_count=4)
+MLDSA key 0 hash (48 bytes, reversed-dword): 787909f1 70e4da0a ... 4c6d6c1b
+MLDSA key 1 hash (48 bytes, reversed-dword): 716f7ba5 4498abff ... de260d54
+MLDSA key 2 hash (48 bytes, reversed-dword): 553c2f7f 8124dde8 ... 9842ce4a
+MLDSA key 3 hash (48 bytes, reversed-dword): 0aebfb79 4b35bc6e ... ae289a5c
+  ... (keys 4-31 are zero-filled)
+
+Total: 4 + (32 × 48) = 1540 bytes
+```
+
+#### MLDSA Step 5: Compute the vendor PK descriptor hash
+
+```
+Input = ECC descriptor (196 bytes) || PQC descriptor (1540 bytes) = 1736 bytes
+
+SHA384 (standard byte order):
+  30399676 a17e3e97 3677b3ff 862f4bf2 d1932d88 4778453c
+  376fe00d c93fb8aa 0770f3eb f3411a08 53e9c57e ce8a2980
+
+As [u32; 12] fuse register value:
+  [0x30399676, 0xa17e3e97, 0x3677b3ff, 0x862f4bf2,
+   0xd1932d88, 0x4778453c, 0x376fe00d, 0xc93fb8aa,
+   0x0770f3eb, 0xf3411a08, 0x53e9c57e, 0xce8a2980]
+```
+
+#### Owner PK hash
+
+The owner PK hash is SHA2-384 over the serialized `ImageOwnerPubKeys` struct, which contains:
+- `ecc_pub_key`: `{ x: [u32; 12], y: [u32; 12] }` — 96 bytes (in reversed-dword format)
+- `pqc_pub_key`: raw byte array of 2592 bytes (for LMS, only the first 48 bytes are meaningful;
+   the rest are zero-padded)
+
+Total: 2688 bytes. The SHA2-384 of these bytes is the owner PK hash.
+
+#### Summary of expected hash values using test keys
+
+Using the test keys from `image/fake-keys/src/lib.rs`:
+
+| Hash | PQC Type | Standard byte order (hex) |
+|------|----------|---------------------------|
+| Vendor PK descriptor hash | LMS (type 3) | `b17ca877666657ccd100e6926c7206b60c995cb68992c6c9baefce728af05441dee1ff415adfc187e1e4edb4d3b2d909` |
+| Vendor PK descriptor hash | MLDSA (type 1) | `30399676a17e3e973677b3ff862f4bf2d1932d884778453c376fe00dc93fb8aa0770f3ebf3411a0853e9c57ece8a2980` |
+| Owner PK hash | LMS (type 3) | `1b179390e4e6c44422ed553e256c7d675cd93190cb49d88d485aa4ef3906cd492ab3ee3d3ba5f2c990ad13390fed4de5` |
+| Owner PK hash | MLDSA (type 1) | `48afdb073c5e0d4ee46490468ef81f2cf57249b6e76a28f5fca4de696a7d3e2ed3efc4e6774318543e95307a54988bd7` |
+
+To convert any of these standard byte order hashes to the `[u32; 12]` fuse register format, group
+the hex string into 8-character (4-byte) chunks and interpret each as a 32-bit word:
+- `b17ca877666657cc...` → `[0xb17ca877, 0x666657cc, 0xd100e692, ...]`
+
+#### Python script to compute vendor and owner PK hashes
+
+The following Python script computes the vendor PK descriptor hash and owner PK hash from
+ECC PEM files and LMS or MLDSA binary key files:
+
+```python
+#!/usr/bin/env python3
+"""
+Compute the Caliptra vendor PK descriptor hash and owner PK hash
+from ECC (.pem) and LMS/MLDSA (.bin) public key files.
+
+Usage:
+  python3 compute_pk_hashes.py --pqc-key-type <1|3> \\
+      --vendor-ecc-pub-keys key0.pem key1.pem key2.pem key3.pem \\
+      --vendor-pqc-pub-keys pqc0.bin pqc1.bin ... \\
+      --owner-ecc-pub-key owner.pem \\
+      --owner-pqc-pub-key owner_pqc.bin
+
+PQC key type: 1 = MLDSA, 3 = LMS
+
+ECC public keys are PEM files (P-384).
+LMS public keys are 48-byte binary files (tree_type, otstype, id, digest).
+MLDSA public keys are 2592-byte binary files.
+"""
+import argparse
+import hashlib
+import struct
+import sys
+
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+# Sizes
+ECC_PUB_KEY_BYTES = 96          # 2 x 48-byte coordinates
+PQC_PUB_KEY_SLOT_BYTES = 2592   # MLDSA key size; LMS keys are 48 bytes, zero-padded
+LMS_PUB_KEY_BYTES = 48
+MLDSA_PUB_KEY_BYTES = 2592
+HASH_BYTES = 48                 # SHA2-384
+
+VENDOR_ECC_MAX_KEYS = 4
+VENDOR_LMS_MAX_KEYS = 32
+VENDOR_MLDSA_MAX_KEYS = 32  # struct always allocates 32 slots; only first 4 are populated
+KEY_DESCRIPTOR_VERSION = 1
+
+
+def ecc_pub_key_to_reversed_dwords(pem_path: str) -> bytes:
+    """Read an ECC P-384 PEM public key and return 96 bytes in reversed-dword format."""
+    with open(pem_path, 'rb') as f:
+        pub_key = load_pem_public_key(f.read())
+    nums = pub_key.public_numbers()
+    x_bytes = nums.x.to_bytes(48, 'big')
+    y_bytes = nums.y.to_bytes(48, 'big')
+    return to_reversed_dwords(x_bytes) + to_reversed_dwords(y_bytes)
+
+
+def to_reversed_dwords(standard_bytes: bytes) -> bytes:
+    """Convert bytes from standard byte order to reversed-dword format.
+
+    Groups the input into 4-byte dwords and reverses the bytes within each dword.
+    """
+    assert len(standard_bytes) % 4 == 0
+    result = bytearray()
+    for i in range(0, len(standard_bytes), 4):
+        result.extend(standard_bytes[i:i+4][::-1])
+    return bytes(result)
+
+
+def sha384_reversed_dwords(data: bytes) -> bytes:
+    """Compute SHA2-384 and return the hash in reversed-dword format."""
+    h = hashlib.sha384(data).digest()
+    return to_reversed_dwords(h)
+
+
+def build_ecc_key_descriptor(ecc_pem_paths: list) -> bytes:
+    """Build the ECC key descriptor: header + key hashes."""
+    n = len(ecc_pem_paths)
+    header = struct.pack('<HBB', KEY_DESCRIPTOR_VERSION, 0, n)
+    hashes = b''
+    for path in ecc_pem_paths:
+        key_bytes = ecc_pub_key_to_reversed_dwords(path)
+        hashes += sha384_reversed_dwords(key_bytes)
+    # Pad to VENDOR_ECC_MAX_KEYS slots
+    hashes += b'\x00' * (HASH_BYTES * (VENDOR_ECC_MAX_KEYS - n))
+    return header + hashes
+
+
+def build_pqc_key_descriptor(pqc_bin_paths: list, pqc_key_type: int) -> bytes:
+    """Build the PQC key descriptor: header + key hashes."""
+    n = len(pqc_bin_paths)
+    max_keys = VENDOR_LMS_MAX_KEYS if pqc_key_type == 3 else VENDOR_MLDSA_MAX_KEYS
+    header = struct.pack('<HBB', KEY_DESCRIPTOR_VERSION, pqc_key_type, n)
+    hashes = b''
+    for path in pqc_bin_paths:
+        with open(path, 'rb') as f:
+            key_bytes = f.read()
+        hashes += sha384_reversed_dwords(key_bytes)
+    # Pad to max slots
+    hashes += b'\x00' * (HASH_BYTES * (max_keys - n))
+    return header + hashes
+
+
+def build_owner_pub_keys(ecc_pem_path: str, pqc_bin_path: str) -> bytes:
+    """Build the serialized ImageOwnerPubKeys struct."""
+    ecc_bytes = ecc_pub_key_to_reversed_dwords(ecc_pem_path)
+    with open(pqc_bin_path, 'rb') as f:
+        pqc_bytes = f.read()
+    # Pad PQC key to full slot size
+    pqc_padded = pqc_bytes + b'\x00' * (PQC_PUB_KEY_SLOT_BYTES - len(pqc_bytes))
+    return ecc_bytes + pqc_padded
+
+
+def hash_to_fuse_words(standard_hash: bytes) -> list:
+    """Convert a standard byte order hash to [u32; 12] fuse word format."""
+    return [int.from_bytes(standard_hash[i:i+4], 'big') for i in range(0, 48, 4)]
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Compute Caliptra vendor PK descriptor hash and owner PK hash')
+    parser.add_argument('--pqc-key-type', type=int, required=True, choices=[1, 3],
+                        help='PQC key type: 1=MLDSA, 3=LMS')
+    parser.add_argument('--vendor-ecc-pub-keys', nargs='+', required=True,
+                        help='Vendor ECC P-384 public key PEM files')
+    parser.add_argument('--vendor-pqc-pub-keys', nargs='+', required=True,
+                        help='Vendor PQC (LMS .bin or MLDSA .bin) public key files')
+    parser.add_argument('--owner-ecc-pub-key',
+                        help='Owner ECC P-384 public key PEM file')
+    parser.add_argument('--owner-pqc-pub-key',
+                        help='Owner PQC (LMS .bin or MLDSA .bin) public key file')
+    args = parser.parse_args()
+
+    pqc_name = {1: 'MLDSA', 3: 'LMS'}[args.pqc_key_type]
+
+    # Build descriptors
+    ecc_desc = build_ecc_key_descriptor(args.vendor_ecc_pub_keys)
+    pqc_desc = build_pqc_key_descriptor(args.vendor_pqc_pub_keys, args.pqc_key_type)
+    vendor_pub_key_info = ecc_desc + pqc_desc
+
+    # Vendor PK descriptor hash (standard byte order)
+    vendor_hash = hashlib.sha384(vendor_pub_key_info).digest()
+    vendor_hex = vendor_hash.hex()
+    vendor_words = hash_to_fuse_words(vendor_hash)
+
+    print(f"PQC key type: {args.pqc_key_type} ({pqc_name})")
+    print()
+    print(f"Vendor PK descriptor hash (standard byte order):")
+    print(f"  {vendor_hex}")
+    print(f"Vendor PK descriptor hash (fuse [u32; 12]):")
+    print(f"  {['0x{:08x}'.format(w) for w in vendor_words]}")
+
+    if args.owner_ecc_pub_key and args.owner_pqc_pub_key:
+        owner_bytes = build_owner_pub_keys(args.owner_ecc_pub_key, args.owner_pqc_pub_key)
+        owner_hash = hashlib.sha384(owner_bytes).digest()
+        owner_hex = owner_hash.hex()
+        owner_words = hash_to_fuse_words(owner_hash)
+
+        print()
+        print(f"Owner PK hash (standard byte order):")
+        print(f"  {owner_hex}")
+        print(f"Owner PK hash (fuse [u32; 12]):")
+        print(f"  {['0x{:08x}'.format(w) for w in owner_words]}")
+
+
+if __name__ == '__main__':
+    main()
+```
+
+### Fuse value byte ordering
+
+This section documents the byte ordering convention for every multi-word fuse
+register. It uses the same style as the
+[Byte order of cryptographic fields](../../runtime/README.md#byte-order-of-cryptographic-fields)
+section in the Runtime README: examples show the relationship between standard
+tool output (e.g. OpenSSL, Python `hashlib`) and the `u32` word values written
+to fuse registers.
+
+> **When adding a new multi-word fuse**, add an entry to the appropriate
+> category below so that SoC integrators have a single reference for all fuse
+> byte ordering.
+
+#### SHA digest fuses (big-endian words / reversed-dword)
+
+The following fuse registers store SHA digest values as `[u32; N]` arrays using
+the same **reversed-dword format** described in
+[Public key hash byte ordering](#public-key-hash-byte-ordering-dword-reversal).
+Each 4-byte group from the standard hash output (as produced by `openssl dgst`
+or Python's `hashlib`) is byte-reversed when stored as a `u32` word.
+
+| Fuse Register | Array Type | Hash Algorithm |
+|---|---|---|
+| FUSE_VENDOR_PK_HASH | `[u32; 12]` | SHA2-384 of vendor public key descriptors |
+| FUSE_MANUF_DEBUG_UNLOCK_TOKEN | `[u32; 16]` | SHA-512 of the manufacturing debug unlock token |
+
+Example — suppose `openssl dgst -sha512` produces a digest starting with:
+
+```
+openssl output:     86 9B A8 D5  AD 0F CF 82  02 E5 60 80  ...
+                    ~~~~~~~~~~~  ~~~~~~~~~~~  ~~~~~~~~~~~
+Fuse register[0]:   0x869BA8D5   [1]: 0xAD0FCF82   [2]: 0x02E56080   ...
+```
+
+Each 4-byte group from the OpenSSL output maps directly to one fuse register
+word as a big-endian `u32` — the first byte of the group is the most-significant
+byte of the word.
+
+On the little-endian RISC-V bus the bytes within each register word appear
+reversed at byte addresses:
+
+```
+Fuse byte address:  0    1    2    3    4    5    6    7    8    9    A    B   ...
+Byte value:         D5   A8   9B   86   82   CF   0F   AD   80   60   E5   02  ...
+                    ── register[0] ──   ─── register[1] ──  ── register[2] ──
+```
+
+##### Manufacturing debug unlock token: step-by-step
+
+1. Choose a 32-byte random secret (the raw token). This is what the SoC sends
+   over the mailbox to unlock debug.
+
+2. Compute SHA-512 of the raw token:
+   ```
+   $ printf '\xd8\x92\x2c\x55\x79\x2b\x73\x7f\x29\x13\xf3\xe5\xcb\xe6\x54\x75' \
+            '\x62\x52\x01\x6e\xae\xe9\x63\xa1\xdd\x4e\x75\x3a\xf7\x87\xf0\x96' \
+       | openssl dgst -sha512 -binary | xxd -p -c 64
+   869ba8d5ad0fcf8202e560803281da659812ffa2fc28c2d5154cb645ee0c38ec
+   4fd9dd8bb0be7deb193f625381383a91ab40bd920fcd9425919e63723c0bf7a8
+   ```
+
+3. Split into 4-byte groups and interpret each as a big-endian `u32` to get the
+   fuse word values:
+   ```
+   Fuse [u32; 16] = {
+       0x869BA8D5, 0xAD0FCF82, 0x02E56080, 0x3281DA65,
+       0x9812FFA2, 0xFC28C2D5, 0x154CB645, 0xEE0C38EC,
+       0x4FD9DD8B, 0xB0BE7DEB, 0x193F6253, 0x81383A91,
+       0xAB40BD92, 0x0FCD9425, 0x919E6372, 0x3C0BF7A8,
+   }
+   ```
+
+4. MCU or SoC manager writes these 16 words into the `FUSE_MANUF_DEBUG_UNLOCK_TOKEN` registers from fuses.
+
+#### Architectural register: CPTRA_OWNER_PK_HASH (big-endian words)
+
+**CPTRA_OWNER_PK_HASH** (`[u32; 12]`) uses the same reversed-dword format as
+FUSE_VENDOR_PK_HASH. See
+[Public key hash byte ordering](#public-key-hash-byte-ordering-dword-reversal)
+for details and worked examples.
+
+##### Production debug unlock public key hashes: byte ordering
+
+The production debug unlock flow uses SHA2-384 hashes of the concatenated
+ECC and MLDSA public keys to authenticate debug unlock tokens. These hashes
+are stored in the MCI register bank at addresses computed from
+`SS_PROD_DEBUG_UNLOCK_AUTH_PK_HASH_REG_BANK_OFFSET`.
+
+**Hash input construction:**
+
+The hash is SHA2-384 over the raw mailbox wire bytes of the concatenated
+ECC and MLDSA public keys from the `AUTH_DEBUG_UNLOCK_TOKEN` payload.
+The mailbox wire format for each key type is:
+
+- **ECC public key (96 bytes)**: Each 4-byte group of the X and Y
+  coordinates is **dword-reversed** from the standard OpenSSL output.
+
+  ```
+  openssl ec output:  AB CD EF 01  23 45 67 89  ...  (X, 48 bytes)
+                      11 22 33 44  55 66 77 88  ...  (Y, 48 bytes)
+
+  Hash input (= mailbox wire bytes):
+                      01 EF CD AB  89 67 45 23  ...  (X, dword-reversed)
+                      44 33 22 11  88 77 66 55  ...  (Y, dword-reversed)
+  ```
+
+- **MLDSA public key (2592 bytes)**: The native MLDSA key bytes are
+  used **as-is** — no conversion.
+
+  ```
+  MLDSA keygen output: 72 C0 F1 3B  7D 93 7E 22  ...
+
+  Hash input (= mailbox wire bytes):
+                       72 C0 F1 3B  7D 93 7E 22  ...  (identical)
+  ```
+
+To compute the same hash offline for fuse provisioning, reconstruct the
+mailbox wire bytes: dword-reverse the ECC coordinates, keep MLDSA native,
+concatenate, and hash:
+
+```
+ECC dword-reversed:      01 EF CD AB  89 67 45 23  ...  (96 bytes)
+MLDSA native:            72 C0 F1 3B  7D 93 7E 22  ...  (2592 bytes)
+
+hash_input = ECC_dword_reversed || MLDSA_native_bytes  (2688 bytes)
+
+$ openssl dgst -sha384 -binary combined.bin | xxd -p -c 48
+→ 3f7a2b91c4e8d0f5...
+```
+
+**Provisioning: OpenSSL example**
+
+To prepare `combined_keys.bin`, dword-reverse the ECC raw coordinates
+and concatenate with the native MLDSA key bytes. Then compute the hash:
+
+```
+$ openssl dgst -sha384 -binary combined_keys.bin | xxd -p -c 48
+3f7a2b91c4e8d0f5a1b2c3d4e5f60718293a4b5c6d7e8f90a0b1c2d3e4f5061728394a5b6c
+```
+
+Map the digest output to fuse register words — each 4-byte group becomes
+one `u32` fuse word (same convention as all other SHA digest fuses):
+
+```
+openssl output:     3f 7a 2b 91  c4 e8 d0 f5  a1 b2 c3 d4  ...
+                    ~~~~~~~~~~~  ~~~~~~~~~~~  ~~~~~~~~~~~
+Fuse word[0]:       0x3F7A2B91   [1]: 0xC4E8D0F5   [2]: 0xA1B2C3D4   ...
+```
+
+Write these 12 words to the MCI register bank at offset:
+
+```
+SS_PROD_DEBUG_UNLOCK_AUTH_PK_HASH_REG_BANK_OFFSET + ((level - 1) * 48)
+```
+
+**Mailbox payload: preparing fields from OpenSSL output**
+
+The `AUTH_DEBUG_UNLOCK_TOKEN` mailbox command fields use the byte order
+conventions described in
+[Byte order of cryptographic fields](../../runtime/README.md#byte-order-of-cryptographic-fields).
+The table below summarizes how to convert OpenSSL tool output into the
+mailbox payload bytes for each field:
+
+- **ECC P-384 public key (big-endian words)**: Extract the raw X and Y
+  coordinates (48 bytes each) from the PEM key, then **dword-reverse**
+  each 4-byte group before writing to the mailbox.
+
+  ```
+  # Extract raw X||Y from PEM (96 bytes, big-endian):
+  $ openssl ec -pubin -in key.pem -outform DER 2>/dev/null \
+      | tail -c 96 | xxd -p -c 48
+
+  OpenSSL raw bytes:  AB CD EF 01  23 45 67 89  ...  (X, 48 bytes)
+                      11 22 33 44  55 66 77 88  ...  (Y, 48 bytes)
+
+  Mailbox bytes:      01 EF CD AB  89 67 45 23  ...  (X, dword-reversed)
+                      44 33 22 11  88 77 66 55  ...  (Y, dword-reversed)
+  ```
+
+- **MLDSA-87 public key (little-endian words)**: Copy the raw key bytes
+  produced by an MLDSA implementation (e.g. OpenSSL 3.5+, `fips204` crate)
+  **directly** into the mailbox — no conversion needed.
+
+  ```
+  MLDSA key bytes:    72 C0 F1 3B  7D 93 7E 22  ...  (2592 bytes)
+  Mailbox bytes:      72 C0 F1 3B  7D 93 7E 22  ...  (identical)
+  ```
+
+- **ECC P-384 signature (big-endian words)**: Same treatment as the public
+  key — dword-reverse each 4-byte group of the R and S coordinates.
+
+- **MLDSA-87 signature (little-endian words)**: Copy raw signature bytes
+  directly — no conversion needed. The trailing byte (byte 4628) is
+  reserved and should be zero.
+
+**Note:** The hash used for fuse provisioning is computed over the exact
+same bytes that appear on the mailbox wire. There is no additional
+transformation — the SHA accelerator's internal endianness handling is
+transparent and produces `SHA384(wire_bytes)`. Therefore the provisioning
+hash and the runtime verification hash are both computed over
+`ECC_dword_reversed || MLDSA_native`.
+
+#### SVN fuses (little-endian 128-bit bitmap)
+
+**FUSE_FIRMWARE_SVN** and **FUSE_SOC_MANIFEST_SVN** are 128-bit one-hot encoded bitmaps stored
+as `[u32; 4]`. These are **not** cryptographic values — the security version
+number equals the bit position of the highest set bit.
+
+The four words form a little-endian 128-bit integer: word\[0\] contains bits
+0–31, word\[1\] contains bits 32–63, and so on.
+
+Example — to program SVN 7, set bits 0 through 6:
+
+```
+FUSE_FIRMWARE_SVN[0] = 0x0000007F    (bits 0-6 set)
+FUSE_FIRMWARE_SVN[1] = 0x00000000
+FUSE_FIRMWARE_SVN[2] = 0x00000000
+FUSE_FIRMWARE_SVN[3] = 0x00000000
+```
+
+Example — SVN 40 means bits 0 through 39 are set:
+
+```
+FUSE_FIRMWARE_SVN[0] = 0xFFFFFFFF    (bits 0-31 set)
+FUSE_FIRMWARE_SVN[1] = 0x000000FF    (bits 32-39 set)
+FUSE_FIRMWARE_SVN[2] = 0x00000000
+FUSE_FIRMWARE_SVN[3] = 0x00000000
+```
+
+#### Obfuscated seed fuses (big-endian words)
+
+**FUSE_UDS_SEED** (`[u32; 16]`), **FUSE_FIELD_ENTROPY** (`[u32; 8]`), and
+**FUSE_HEK_SEED** (`[u32; 8]`) are obfuscated secret values. They use the same
+**big-endian word** ordering as SHA digest fuses — each `u32` word maps to 4
+bytes in big-endian order.
+
+These values are consumed through an AES de-obfuscation step and are typically
+programmed by the manufacturing toolchain. If replicating values for test or
+simulation, use the same big-endian word convention when converting between byte
+arrays and `[u32; N]` arrays.
+
+#### Scalar and per-word fuses (no byte-ordering concern)
+
+The following fuse registers are single words or per-word indexed values with no
+multi-word byte ordering:
+
+| Register | Width | Notes |
+|---|---|---|
+| FUSE_ECC_REVOCATION | 4 bits | Bitmask |
+| FUSE_LMS_REVOCATION | 32 bits | Bitmask |
+| FUSE_MLDSA_REVOCATION | 4 bits | Bitmask |
+| FUSE_ANTI_ROLLBACK_DISABLE | 1 bit | Boolean |
+| FUSE_PQC_KEY_TYPE | 2 bits | One-hot encoded |
+| FUSE_SOC_STEPPING_ID | 16 bits | Scalar |
+| FUSE_SOC_MANIFEST_MAX_SVN | 8 bits | Scalar |
+| FUSE_IDEVID_CERT_ATTR | 24 × u32 | Per-word indexed; each word accessed individually |
+| FUSE_IDEVID_MANUF_HSM_ID | 4 × u32 | Opaque identifier, used as-is |
 
 ## Preamble validation steps
 

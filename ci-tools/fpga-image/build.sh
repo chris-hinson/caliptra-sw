@@ -18,7 +18,7 @@ if [[ -z "${SKIP_DEBOOTSTRAP}" ]]; then
   mkdir -p out/rootfs
   PACKAGES="git,curl,ca-certificates,locales,libicu72,sudo,vmtouch,fping,rdnssd,dbus,systemd-timesyncd,libboost-regex1.74.0,openocd,gdb-multiarch,macchanger"
   if [[ "$BUILD_DEV_IMAGE" == "true" ]]; then
-    PACKAGES="$PACKAGES,ssh,rsync,tmux,cloud-guest-utils"
+    PACKAGES="$PACKAGES,ssh,tmux,cloud-guest-utils"
   fi
   debootstrap --include "$PACKAGES" --arch arm64 --foreign bookworm out/rootfs
   chroot out/rootfs /debootstrap/debootstrap --second-stage
@@ -101,6 +101,20 @@ RemainAfterExit=true
 WantedBy=multi-user.target
 EOF
       chroot out/rootfs systemctl enable resize-rootfs.service
+  else
+      # Stub developer dependencies to work around xtask checks.
+      chroot out/rootfs bash -c 'echo "#!/bin/sh" > /usr/bin/podman'
+      chroot out/rootfs bash -c 'echo "echo stub" >> /usr/bin/podman'
+
+      chroot out/rootfs bash -c 'echo "#!/bin/sh" > /usr/bin/rsync'
+      chroot out/rootfs bash -c 'echo "echo stub" >> /usr/bin/rsync'
+
+      chroot out/rootfs bash -c 'echo "#!/bin/sh" > /usr/bin/cargo-nextest'
+      chroot out/rootfs bash -c 'echo "echo stub" >> /usr/bin/cargo-nextest'
+
+      chroot out/rootfs chmod +x /usr/bin/rsync
+      chroot out/rootfs chmod +x /usr/bin/podman
+      chroot out/rootfs chmod +x /usr/bin/cargo-nextest
   fi
 
   # Comment this line out if you don't trust folks with physical access to the
@@ -117,12 +131,14 @@ EOF
 fi
 
 pushd out
-podman run --rm -v$PWD:/work-dir -w/work-dir ghcr.io/chipsalliance/caliptra-builder:latest /bin/bash -c "rustup +1.90 target add aarch64-unknown-linux-gnu && CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo +1.90 install cargo-nextest --version 0.9.118 --target aarch64-unknown-linux-gnu --target-dir /work-dir"
+podman run --rm -v$PWD:/work-dir -w/work-dir ghcr.io/chipsalliance/caliptra-builder:latest /bin/bash -c "rustup +1.91.1 target add aarch64-unknown-linux-gnu && CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc cargo +1.91.1 install cargo-nextest --version 0.9.118 --target aarch64-unknown-linux-gnu --target-dir /work-dir"
 popd
 
 mv out/aarch64-unknown-linux-gnu/release/cargo-nextest out/rootfs/usr/bin/
 
 chroot out/rootfs bash -c 'echo ::1 caliptra-fpga >> /etc/hosts'
+cp overlay-mount.sh out/rootfs/usr/sbin/
+chmod 755 out/rootfs/usr/sbin/overlay-mount.sh
 cp startup-script.sh out/rootfs/usr/bin/
 chroot out/rootfs systemctl set-default multi-user.target
 chroot out/rootfs chmod 755 /usr/bin/startup-script.sh

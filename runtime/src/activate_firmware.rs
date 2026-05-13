@@ -23,7 +23,7 @@ use caliptra_auth_man_types::ImageMetadataFlags;
 use caliptra_common::mailbox_api::{ActivateFirmwareReq, ActivateFirmwareResp, MailboxRespHeader};
 use caliptra_drivers::dma::MCU_SRAM_OFFSET;
 use caliptra_drivers::{AesDmaMode, AxiAddr, CaliptraError, CaliptraResult, DmaMmio, DmaRecovery};
-use ureg::Mmio;
+use caliptra_ureg::Mmio;
 
 pub const MCI_TOP_REG_RESET_REASON_OFFSET: u32 = 0x38;
 const MCI_TOP_REG_INTR_RF_BLOCK_OFFSET: u32 = 0x1000;
@@ -108,7 +108,7 @@ impl ActivateFirmwareCmd {
             if exec_bit == 0 || exec_bit == 1 || exec_bit > MAX_EXEC_GO_BIT_INDEX {
                 return Err(CaliptraError::RUNTIME_MAILBOX_INVALID_PARAMS);
             }
-            Self::set_bit(&mut images_to_activate_bitmap, fw_id as usize);
+            Self::set_bit(&mut images_to_activate_bitmap, exec_bit as usize);
         }
 
         Self::activate_fw(drivers, &images_to_activate_bitmap, mcu_image_size as u32)

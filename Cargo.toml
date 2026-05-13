@@ -27,7 +27,6 @@ members = [
   "auth-manifest/types",
   "builder",
   "ci-tools/file-header-fix",
-  "ci-tools/size-history",
   "common",
   "common/okref",
   "common/eat",
@@ -99,15 +98,21 @@ caliptra-auth-man-gen = { path = "auth-manifest/gen", default-features = false }
 caliptra-auth-man-types = { path = "auth-manifest/types", default-features = false }
 
 # The caliptra-cfi commit rev MUST match the one in caliptra-dpe or the Caliptra runtime will be bloated with duplicate symbols.
-caliptra-cfi-lib = { git = "https://github.com/chipsalliance/caliptra-cfi.git", package = "caliptra-cfi-lib", rev = "767d4ef59a106aea683b883c07bd65456fb3ba6b", default-features = false, features = ["cfi", "cfi-counter" ] }
-caliptra-cfi-derive = { git = "https://github.com/chipsalliance/caliptra-cfi.git", package = "caliptra-cfi-derive", rev = "767d4ef59a106aea683b883c07bd65456fb3ba6b"}
+caliptra-cfi-lib = { git = "https://github.com/chipsalliance/caliptra-cfi.git", package = "caliptra-cfi-lib", rev = "aa96c53073ce7f298f7482c1ac57f5f65ffc115e", default-features = false, features = ["cfi", "cfi-counter" ] }
+caliptra-cfi-derive = { git = "https://github.com/chipsalliance/caliptra-cfi.git", package = "caliptra-cfi-derive", rev = "aa96c53073ce7f298f7482c1ac57f5f65ffc115e"}
 
-caliptra_common = { path = "common", default-features = false }
+caliptra-common = { path = "common", default-features = false }
 caliptra-coverage = { path = "coverage" }
 caliptra-builder = { path = "builder" }
 caliptra-cpu = { path = "cpu" }
 caliptra-drivers = { path = "drivers" }
 caliptra-drivers-test-bin = { path = "drivers/test-fw" }
+
+# DPE dependencies; keep git revs in sync alongside test/dpe_verification/go.mod
+caliptra-dpe = { git = "https://github.com/chipsalliance/caliptra-dpe", rev = "3e5b97094e71a5d5c6f6a5bd1882f4006830f2cc", default-features = false, features = ["hybrid"] }
+caliptra-dpe-crypto = { git = "https://github.com/chipsalliance/caliptra-dpe", rev = "3e5b97094e71a5d5c6f6a5bd1882f4006830f2cc", default-features = false }
+caliptra-dpe-platform = { git = "https://github.com/chipsalliance/caliptra-dpe", rev = "3e5b97094e71a5d5c6f6a5bd1882f4006830f2cc", default-features = false }
+
 caliptra-emu-bus = { path = "sw-emulator/lib/bus" }
 caliptra-emu-cpu = { path = "sw-emulator/lib/cpu" }
 caliptra-emu-crypto = { path = "sw-emulator/lib/crypto" }
@@ -128,6 +133,7 @@ caliptra-image-types = { path = "image/types", default-features = false }
 caliptra-image-verify = { path = "image/verify", default-features = false }
 caliptra-kat = { path = "kat" }
 caliptra-lms-types = { path = "lms-types" }
+caliptra-ocp-eat = { path = "common/eat", default-features = false }
 caliptra-okref = { path = "common/okref" }
 caliptra-registers = { path = "registers" }
 caliptra-registers-latest = { path = "hw/latest/registers" }
@@ -136,6 +142,10 @@ caliptra-systemrdl = { path = "systemrdl" }
 caliptra-test = { path = "test" }
 caliptra-test-harness = { path = "test-harness" }
 caliptra-test-harness-types = { path = "test-harness/types" }
+caliptra-ureg = { path = "ureg" }
+caliptra-ureg-codegen = { path = "ureg/lib/codegen" }
+caliptra-ureg-schema = { path = "ureg/lib/schema" }
+caliptra-ureg-systemrdl = { path = "ureg/lib/systemrdl" }
 caliptra-verilated = { path = "hw/verilated",  features = ["verilator"] }
 caliptra-x509 = { path = "x509", default-features = false }
 cbc = "0.1.2"
@@ -181,7 +191,6 @@ memoffset = "0.8.0"
 ml-kem = { version = "0.2.1", features = ["deterministic"] }
 once_cell = "1.13"
 openssl = { version = "0.10", features = ["vendored"] }
-ocp-eat = { path = "common/eat", default-features = false }
 p384 = "0.13.0"
 proc-macro2 = "1.0.66"
 quote = "1.0"
@@ -208,10 +217,6 @@ tock-registers = { git = "https://github.com/tock/tock.git", rev = "release-2.2"
 toml = "0.7.0"
 ufmt = { git = "https://github.com/korran/ufmt.git", rev = "1d0743c1ffffc68bc05ca8eeb81c166192863f33", features = ["inline"] }
 uio = { version = "0.4.0" }
-ureg = { path = "ureg" }
-ureg-codegen = { path = "ureg/lib/codegen" }
-ureg-schema = { path = "ureg/lib/schema" }
-ureg-systemrdl = { path = "ureg/lib/systemrdl" }
 wycheproof = { git = "https://github.com/randombit/wycheproof-rs", rev = "5120390a605bb6fd950048928981dc7a52937379" }
 x509-cert = { version = "0.2.5", features = ["builder", "hazmat"] }
 x509-parser = "0.15.0"
@@ -226,15 +231,14 @@ sec1 = { version = "0.7.3" }
 itertools = { version = "0.12.0", default-features = false }
 riscv = "0.13.0"
 
-# DPE dependencies; keep git revs in sync alongside test/dpe_verification/go.mod
-dpe = { git = "https://github.com/chipsalliance/caliptra-dpe", rev = "cfc9a713882ca562a0ae6565198129e6da121a42", default-features = false, features = ["hybrid"] }
-crypto = { git = "https://github.com/chipsalliance/caliptra-dpe", rev = "cfc9a713882ca562a0ae6565198129e6da121a42", default-features = false }
-platform = { git = "https://github.com/chipsalliance/caliptra-dpe", rev = "cfc9a713882ca562a0ae6565198129e6da121a42", default-features = false }
-
 # local DPE dependency; useful when developing
-# dpe = { path = "../caliptra-dpe/dpe", default-features = false, features = ["hybrid"] }
-# crypto = { path = "../caliptra-dpe/crypto", default-features = false }
-# platform = { path = "../caliptra-dpe/platform", default-features = false }
+# caliptra-dpe = { path = "../caliptra-dpe/dpe", default-features = false, features = ["hybrid"] }
+# caliptra-dpe-crypto = { path = "../caliptra-dpe/crypto", default-features = false }
+# caliptra-dpe-platform = { path = "../caliptra-dpe/platform", default-features = false }
+
+# infra dependecies for CI
+size-history = { git = "https://github.com/chipsalliance/caliptra-infra.git", package = "caliptra-size-history", rev = "64e75e17e1a2eb07ff8dd6698932af82182da85e" }
+bitstream-downloader = { git = "https://github.com/chipsalliance/caliptra-infra.git", package = "caliptra-bitstream-downloader", rev = "64e75e17e1a2eb07ff8dd6698932af82182da85e" }
 
 [profile.firmware]
 inherits = "release"

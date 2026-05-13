@@ -16,20 +16,20 @@ use caliptra_builder::{
 use caliptra_common::mailbox_api::{
     CommandId, FwInfoResp, IncrementPcrResetCounterReq, MailboxReq, MailboxReqHeader, TagTciReq,
 };
-use caliptra_drivers::PcrResetCounter;
-use caliptra_error::CaliptraError;
-use caliptra_hw_model::{
-    DefaultHwModel, DeviceLifecycle, HwModel, InitParams, ModelError, SecurityState,
-};
-use caliptra_image_types::FwVerificationPqcKeyType;
-use caliptra_runtime::{ContextState, RtBootStatus, PL0_DPE_ACTIVE_CONTEXT_DEFAULT_THRESHOLD};
-use dpe::{
+use caliptra_dpe::{
     context::{Context, ContextHandle, ContextType},
     response::DpeErrorCode,
     tci::TciMeasurement,
     validation::ValidationError,
     U8Bool, MAX_HANDLES, TCI_SIZE,
 };
+use caliptra_drivers::PcrResetCounter;
+use caliptra_error::CaliptraError;
+use caliptra_hw_model::{
+    DefaultHwModel, DeviceLifecycle, HwModel, InitParams, ModelError, SecurityState,
+};
+use caliptra_image_types::FwVerificationPqcKeyType;
+use caliptra_runtime::{ContextState, PL0_DPE_ACTIVE_CONTEXT_DEFAULT_THRESHOLD};
 use zerocopy::{FromBytes, IntoBytes, TryFromBytes};
 
 use crate::common::{
@@ -74,9 +74,7 @@ fn test_rt_pcr_updated_in_dpe() {
     };
     let mut model = run_rt_test(runtime_test_args);
 
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     // trigger update reset
     update_fw(&mut model, mbox_test_image(), image_options);
@@ -111,9 +109,7 @@ fn test_rt_journey_pcr_updated_with_good_fw() {
     };
     let mut model = run_rt_test(runtime_test_args);
 
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     let orig_rt_journey_pcr_resp = model.mailbox_execute(0x1000_0000, &[]).unwrap().unwrap();
     let orig_rt_journey_pcr: [u8; 48] = orig_rt_journey_pcr_resp.as_bytes().try_into().unwrap();
@@ -121,9 +117,7 @@ fn test_rt_journey_pcr_updated_with_good_fw() {
     // trigger update reset
     update_fw(&mut model, mbox_test_image_without_uart(), image_options);
 
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     let new_rt_journey_pcr_resp = model.mailbox_execute(0x1000_0000, &[]).unwrap().unwrap();
     let new_rt_journey_pcr: [u8; 48] = new_rt_journey_pcr_resp.as_bytes().try_into().unwrap();
@@ -144,9 +138,7 @@ fn test_rt_journey_pcr_not_updated_with_bad_fw() {
     };
     let mut model = run_rt_test(runtime_test_args);
 
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     let orig_rt_journey_pcr_resp = model.mailbox_execute(0x1000_0000, &[]).unwrap().unwrap();
     let orig_rt_journey_pcr: [u8; 48] = orig_rt_journey_pcr_resp.as_bytes().try_into().unwrap();
@@ -163,9 +155,7 @@ fn test_rt_journey_pcr_not_updated_with_bad_fw() {
         Err(ModelError::MailboxCmdFailed(expected_error))
     );
 
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     assert_eq!(
         model.soc_ifc().cptra_fw_error_non_fatal().read(),
@@ -190,9 +180,7 @@ fn test_tags_persistence() {
     };
     let mut model = run_rt_test(runtime_test_args);
 
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     // Tag default context in order to change the context tags in persistent data
     let mut cmd = MailboxReq::TagTci(TagTciReq {
@@ -308,7 +296,7 @@ fn test_dpe_validation_deformed_structure() {
 
     // read DPE after RT initialization
     let dpe_resp = model.mailbox_execute(0xA000_0000, &[]).unwrap().unwrap();
-    let mut dpe = dpe::State::try_read_from_bytes(dpe_resp.as_bytes()).unwrap();
+    let mut dpe = caliptra_dpe::State::try_read_from_bytes(dpe_resp.as_bytes()).unwrap();
 
     // corrupt DPE structure by creating multiple normal connected components
     dpe.contexts[0].children = 0.into();
@@ -363,7 +351,7 @@ fn test_dpe_validation_illegal_state() {
 
     // read DPE after RT initialization
     let dpe_resp = model.mailbox_execute(0xA000_0000, &[]).unwrap().unwrap();
-    let mut dpe = dpe::State::try_read_from_bytes(dpe_resp.as_bytes()).unwrap();
+    let mut dpe = caliptra_dpe::State::try_read_from_bytes(dpe_resp.as_bytes()).unwrap();
 
     // corrupt DPE state by messing up parent-child links
     dpe.contexts[1].children = 0b1.into();
@@ -416,7 +404,7 @@ fn test_dpe_validation_used_context_threshold_exceeded() {
 
     // read DPE after RT initialization
     let dpe_resp = model.mailbox_execute(0xA000_0000, &[]).unwrap().unwrap();
-    let mut dpe = dpe::State::try_read_from_bytes(dpe_resp.as_bytes()).unwrap();
+    let mut dpe = caliptra_dpe::State::try_read_from_bytes(dpe_resp.as_bytes()).unwrap();
 
     let pl0_pauser = ImageOptions::default().vendor_config.pl0_pauser.unwrap();
 
@@ -461,7 +449,7 @@ fn test_dpe_validation_used_context_threshold_exceeded() {
             pl0_context_count += 1;
         }
         current_idx += 1;
-        assert!(current_idx < dpe::MAX_HANDLES);
+        assert!(current_idx < caliptra_dpe::MAX_HANDLES);
     }
     let _ = model
         .mailbox_execute(0xB000_0000, dpe.as_bytes())
@@ -499,9 +487,7 @@ fn test_pcr_reset_counter_persistence() {
     };
     let mut model = run_rt_test(runtime_args);
 
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     // Increment counter for PCR0 in order to change the pcr reset counter in persistent data
     let mut cmd = MailboxReq::IncrementPcrResetCounter(IncrementPcrResetCounterReq {
@@ -861,9 +847,7 @@ fn test_cciv_updated_in_dpe() {
             &image_bundle_mbox.to_bytes().unwrap(),
         )
         .unwrap();
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     // Get actual values from FW
     let cciv_current_resp = model.mailbox_execute(0x6000_0002, &[]).unwrap().unwrap();
@@ -884,9 +868,7 @@ fn test_cciv_updated_in_dpe() {
             &image_bundle_standard.to_bytes().unwrap(),
         )
         .unwrap();
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     // Update CCIV journey measurement
     let cciv_journey_exp: [u8; 48] =
@@ -899,9 +881,7 @@ fn test_cciv_updated_in_dpe() {
             &image_bundle_mbox.to_bytes().unwrap(),
         )
         .unwrap();
-    model.step_until(|m| {
-        m.soc_ifc().cptra_boot_status().read() == u32::from(RtBootStatus::RtReadyForCommands)
-    });
+    model.step_until_ready_for_runtime();
 
     // Update expected CCIV journey measurement
     let cciv_journey_exp: [u8; 48] =

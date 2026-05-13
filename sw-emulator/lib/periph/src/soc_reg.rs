@@ -123,7 +123,11 @@ register_bitfields! [
         STATUS OFFSET(0) NUMBITS(23) [],
         LDEVID_CERT_READY OFFSET(23) NUMBITS(1) [],
         IDEVID_CSR_READY OFFSET(24) NUMBITS(1) [],
-        BOOT_FSM_PS OFFSET(25) NUMBITS(3) [],
+        BOOT_FSM_PS OFFSET(25) NUMBITS(3) [
+            BOOT_IDLE = 0,
+            BOOT_FUSE = 1,
+            BOOT_DONE = 4,
+        ],
         READY_FOR_FW OFFSET(28) NUMBITS(1) [],
         READY_FOR_RT OFFSET(29) NUMBITS(1) [],
         READY_FOR_FUSES OFFSET(30) NUMBITS(1) [],
@@ -791,10 +795,10 @@ struct SocRegistersImpl {
     ss_uds_seed_base_addr_h: ReadWriteRegister<u32>,
 
     #[register(offset = 0x528)]
-    ss_prod_debug_unlock_auth_pk_hash_reg_bank_offset: ReadOnlyRegister<u32>,
+    ss_prod_debug_unlock_auth_pk_hash_reg_bank_offset: ReadWriteRegister<u32>,
 
     #[register(offset = 0x52c)]
-    ss_num_of_prod_debug_unlock_auth_pk_hashes: ReadOnlyRegister<u32>,
+    ss_num_of_prod_debug_unlock_auth_pk_hashes: ReadWriteRegister<u32>,
 
     #[register(offset = 0x530)]
     ss_debug_intent: ReadOnlyRegister<u32, SsDebugIntent::Register>,
@@ -978,7 +982,7 @@ impl SocRegistersImpl {
         let clock = &args.clock.clone();
         let pic = &args.pic.clone();
         let flow_status = InMemoryRegister::<u32, FlowStatus::Register>::new(0);
-        flow_status.write(FlowStatus::READY_FOR_FUSES.val(1));
+        flow_status.write(FlowStatus::READY_FOR_FUSES::SET + FlowStatus::BOOT_FSM_PS::BOOT_FUSE);
 
         let cptra_offset = 0x3000_0000u64;
         let rri_offset = crate::dma::axi_root_bus::AxiRootBus::RECOVERY_REGISTER_INTERFACE_OFFSET;
@@ -1122,10 +1126,10 @@ impl SocRegistersImpl {
             ss_uds_seed_base_addr_h: ReadWriteRegister::new((uds_seed_offset >> 32) as u32),
             ss_recovery_mci_base_addr_l: ReadWriteRegister::new(mci_base as u32),
             ss_recovery_mci_base_addr_h: ReadWriteRegister::new((mci_base >> 32) as u32),
-            ss_num_of_prod_debug_unlock_auth_pk_hashes: ReadOnlyRegister::new(
+            ss_num_of_prod_debug_unlock_auth_pk_hashes: ReadWriteRegister::new(
                 ss_prod_dbg_unlock_number_of_fuses as u32,
             ),
-            ss_prod_debug_unlock_auth_pk_hash_reg_bank_offset: ReadOnlyRegister::new(
+            ss_prod_debug_unlock_auth_pk_hash_reg_bank_offset: ReadWriteRegister::new(
                 ss_prod_dbg_unlock_fuse_offset as u32,
             ),
             ss_soc_dbg_unlock_level: [0; 2],
@@ -1214,8 +1218,17 @@ impl SocRegistersImpl {
             Err(BusError::StoreAccessFault)?
         }
 
+        // READY_FOR_FUSES (bit 30) is HW-driven and read-only per spec.
+        // Preserve this bit across SW writes to match RTL behavior.
+        const READY_FOR_FUSES_MASK: u32 = 1 << 30;
+
+        let current = self.cptra_flow_status.reg.get();
+        let preserved = current & READY_FOR_FUSES_MASK;
+
+        let new_val = (val & !READY_FOR_FUSES_MASK) | preserved;
+
         // Set the flow status register.
-        self.cptra_flow_status.reg.set(val);
+        self.cptra_flow_status.reg.set(new_val);
 
         // If ready_for_fw bit is set, run the op_fn_write_complete_cb.
         if self.cptra_flow_status.reg.is_set(FlowStatus::READY_FOR_FW) {
@@ -1250,7 +1263,7 @@ impl SocRegistersImpl {
 
             self.cptra_flow_status
                 .reg
-                .modify(FlowStatus::READY_FOR_FUSES::CLEAR);
+                .modify(FlowStatus::READY_FOR_FUSES::CLEAR + FlowStatus::BOOT_FSM_PS::BOOT_DONE);
         }
         Ok(())
     }

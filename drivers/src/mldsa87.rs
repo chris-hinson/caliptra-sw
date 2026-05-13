@@ -27,6 +27,7 @@ use caliptra_cfi_lib::{
 use caliptra_registers::abr::{AbrReg, RegisterBlock};
 use zerocopy::FromBytes;
 use zerocopy::{IntoBytes, Unalign};
+use zeroize::Zeroize;
 
 #[must_use]
 #[repr(u32)]
@@ -117,7 +118,7 @@ impl<'a> Mldsa87<'a> {
 
     // Wait on the provided condition OR the error condition defined in this function
     // In the event of the error condition being set, clear the error bits and return an error
-    fn wait<F>(regs: RegisterBlock<ureg::RealMmioMut>, condition: F) -> CaliptraResult<()>
+    fn wait<F>(regs: RegisterBlock<caliptra_ureg::RealMmioMut>, condition: F) -> CaliptraResult<()>
     where
         F: Fn() -> bool,
     {
@@ -154,6 +155,28 @@ impl<'a> Mldsa87<'a> {
     ///
     /// * `Mldsa87PubKey` - Generated MLDSA-87 Public Key
     pub fn key_pair(
+        &mut self,
+        seed: Mldsa87Seed,
+        trng: &mut Trng,
+        priv_key_out: Option<&mut Mldsa87PrivKey>,
+    ) -> CaliptraResult<Mldsa87PubKey> {
+        let pubkey = self.key_pair_internal(seed, trng, priv_key_out)?;
+
+        #[cfg(feature = "fips-test-hooks")]
+        let pubkey = unsafe {
+            crate::FipsTestHook::corrupt_data_if_hook_set(
+                crate::FipsTestHook::MLDSA87_PAIRWISE_CONSISTENCY_ERROR,
+                &pubkey,
+            )
+        };
+
+        self.pct(seed, &pubkey, trng)?;
+        Ok(pubkey)
+    }
+
+    /// Raw key pair generation without PCT.
+    #[inline(never)]
+    fn key_pair_internal(
         &mut self,
         seed: Mldsa87Seed,
         trng: &mut Trng,
@@ -197,7 +220,30 @@ impl<'a> Mldsa87<'a> {
         mldsa.mldsa_ctrl().write(|w| w.zeroize(true));
 
         Ok(pubkey)
-        // TODO check that pubkey is valid?
+    }
+
+    /// Pairwise consistency test: sign a zero message with the seed and
+    /// verify against the public key.
+    #[inline(never)]
+    fn pct(
+        &mut self,
+        seed: Mldsa87Seed,
+        pubkey: &Mldsa87PubKey,
+        trng: &mut Trng,
+    ) -> CaliptraResult<()> {
+        let pct_msg = Mldsa87Msg::default();
+        let pct_sign_rnd = Mldsa87SignRnd::default();
+
+        match self.sign(seed, pubkey, &pct_msg, &pct_sign_rnd, trng) {
+            Ok(mut sig) => {
+                sig.zeroize();
+            }
+            Err(_) => {
+                return Err(CaliptraError::DRIVER_MLDSA87_KEYGEN_PAIRWISE_CONSISTENCY_FAILURE);
+            }
+        }
+
+        Ok(())
     }
 
     fn sign_internal(
@@ -318,7 +364,10 @@ impl<'a> Mldsa87<'a> {
         self.sign_internal(seed, pub_key, SigData::Mu(mu), sign_rnd, trng)
     }
 
-    fn program_var_msg(mldsa: RegisterBlock<ureg::RealMmioMut>, msg: &[u8]) -> CaliptraResult<()> {
+    fn program_var_msg(
+        mldsa: RegisterBlock<caliptra_ureg::RealMmioMut>,
+        msg: &[u8],
+    ) -> CaliptraResult<()> {
         // Wait for stream ready or valid status.
         Mldsa87::wait(mldsa, || {
             mldsa.mldsa_status().read().msg_stream_ready() || mldsa.mldsa_status().read().valid()

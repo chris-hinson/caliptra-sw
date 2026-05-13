@@ -32,7 +32,7 @@ permissions:
 
 jobs:
   build_kernel:
-    runs-on: [e2-standard-32, vck190-tools]
+    runs-on: [e2-standard-32-vck190-tools]
     strategy:
       matrix:
         image_variant: [core, subsystem]
@@ -46,7 +46,10 @@ jobs:
           - bitstream_name: xsa_ss2p0_b9f8a767.xsa
             image_variant: subsystem
     env:
+      # Change this to a new random value if you suspect the cache is corrupted
+      CACHE_BUSTER: 8e2f1a3d9c4b
       IMAGE_VARIANT: ${{ matrix.image_variant }}
+
       BITSTREAM_NAME: ${{ matrix.bitstream_name }}
       BITSTREAM_SHA256: ${{ matrix.bitstream_hash }}
     steps:
@@ -62,7 +65,7 @@ jobs:
           path: |
             /tmp/vck190-kernel-${{ matrix.image_variant }}.tar.gz
             /tmp/io-module-${{ matrix.image_variant }}.ko
-          key: kernel-${{ matrix.image_variant }}-${{ matrix.bitstream_hash }}
+          key: kernel-${{ matrix.image_variant }}-${{ matrix.bitstream_hash }}-${{ env.CACHE_BUSTER }}
 
       - name: Install pre-requisites
         if: steps.cache-kernel.outputs.cache-hit != 'true'
@@ -125,7 +128,7 @@ jobs:
           retention-days: 1
 
   build_sd_image:
-    runs-on: [e2-standard-4, big-disk]
+    runs-on: [e2-standard-4-big-disk]
     needs: [build_kernel]
     strategy:
       matrix:

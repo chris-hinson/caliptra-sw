@@ -324,6 +324,11 @@ impl CaliptraError {
             "Driver Error: ECC384 hardware error"
         ),
         (
+            DRIVER_ECC384_ECDH_PAIRWISE_CONSISTENCY_FAILURE,
+            0x00050012,
+            "Driver Error: ECC384 ECDH pairwise consistency failure"
+        ),
+        (
             DRIVER_MLDSA87_READ_SEED_KV_READ,
             0x00058000,
             "Driver Error: MLDSA87 read seed KV read"
@@ -359,6 +364,11 @@ impl CaliptraError {
             "Driver Error: MLDSA87 signature is not supported"
         ),
         (
+            DRIVER_MLDSA87_KEYGEN_PAIRWISE_CONSISTENCY_FAILURE,
+            0x00058007,
+            "Driver Error: MLDSA87 key generation pairwise consistency failure"
+        ),
+        (
             DRIVER_MLKEM_READ_SEED_KV_READ,
             0x00059000,
             "Driver Error: ML-KEM read seed KV read"
@@ -392,6 +402,11 @@ impl CaliptraError {
             DRIVER_MLKEM_READ_MSG_KV_UNKNOWN,
             0x00059006,
             "Driver Error: ML-KEM read message KV unknown"
+        ),
+        (
+            DRIVER_MLKEM_KEYGEN_PAIRWISE_CONSISTENCY_FAILURE,
+            0x00059007,
+            "Driver Error: ML-KEM key generation pairwise consistency failure"
         ),
         (
             DRIVER_KV_ERASE_USE_LOCK_SET_FAILURE,
@@ -1749,6 +1764,16 @@ impl CaliptraError {
             "OCP LOCK Error: VEK is not available"
         ),
         (
+            RUNTIME_OCP_LOCK_SEK_INVALID,
+            0x000E0095,
+            "OCP LOCK Error: SEK is not valid"
+        ),
+        (
+            RUNTIME_OCP_LOCK_DPK_INVALID,
+            0x000E0096,
+            "OCP LOCK Error: DPK is not valid"
+        ),
+        (
             RUNTIME_INVALID_ROM_PERSISTENT_DATA_MARKER,
             0x000E007A,
             "Runtime Error: Invalid ROM persistent data marker"
@@ -2528,6 +2553,11 @@ impl CaliptraError {
             "Debug unlock error: Req bit not set in soc_ifc"
         ),
         (
+            SS_DBG_UNLOCK_PROD_DISABLED,
+            0xa000000c,
+            "Debug unlock error: Production debug unlock disabled"
+        ),
+        (
             RUNTIME_DRIVER_AES_READ_KEY_KV_READ,
             0xa004_0001,
             "Driver Error: AES read key KV read"
@@ -2693,6 +2723,11 @@ impl CaliptraError {
             DOT_INVALID_KEY_TYPE,
             0xa005_5000,
             "DOT Error: Invalid key type"
+        ),
+        (
+            CMB_STABLE_OWNER_KEY_NOT_AVAILABLE,
+            0xa005_5001,
+            "Crypto Mailbox Error: Stable Owner Key is not available when OCP LOCK is enabled"
         ),
         (
             CMB_HMAC_INVALID_ENC_CMK,

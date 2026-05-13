@@ -3,14 +3,14 @@
 use crate::{
     calc_checksum,
     mailbox::{
-        mbox_read_response, mbox_write_fifo, MailboxReqHeader, MailboxRespHeader, Request,
-        Response, StashMeasurementReq,
+        mbox_read_response, mbox_write_fifo_with_limit, MailboxReqHeader, MailboxRespHeader,
+        Request, Response, StashMeasurementReq, MAILBOX_SIZE,
     },
     CaliptraApiError,
 };
 use caliptra_api_types::Fuses;
+use caliptra_ureg::MmioMut;
 use core::mem;
-use ureg::MmioMut;
 use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 pub const NUM_PAUSERS: usize = 5;
@@ -21,7 +21,7 @@ pub const NUM_PAUSERS: usize = 5;
 ///
 /// ```rust
 /// use caliptra_api::SocManager;
-/// use ureg::RealMmioMut;
+/// use caliptra_ureg::RealMmioMut;
 /// struct RealSocManager;
 /// const CPTRA_SOC_IFC_ADDR: u32 = 0x3003_0000;
 /// const CPTRA_SOC_IFC_TRNG_ADDR: u32 = 0x3003_0000;
@@ -47,7 +47,7 @@ pub const NUM_PAUSERS: usize = 5;
 ///
 ///     /// Returns a mutable reference to the memory-mapped I/O.
 ///     fn mmio_mut(&mut self) -> Self::TMmio<'_> {
-///         ureg::RealMmioMut::default()
+///         caliptra_ureg::RealMmioMut::default()
 ///     }
 ///
 ///     /// Provides a delay function to be invoked when polling mailbox status.
@@ -62,6 +62,8 @@ pub trait SocManager {
     const SOC_IFC_TRNG_ADDR: u32;
 
     const MAX_WAIT_CYCLES: u32;
+
+    const MAILBOX_SIZE_LIMIT: usize = MAILBOX_SIZE;
 
     type TMmio<'a>: MmioMut
     where
@@ -236,7 +238,7 @@ pub trait SocManager {
         }
 
         self.soc_mbox().cmd().write(|_| cmd);
-        mbox_write_fifo(&self.soc_mbox(), buf)?;
+        mbox_write_fifo_with_limit(&self.soc_mbox(), buf, Self::MAILBOX_SIZE_LIMIT)?;
 
         // Ask the microcontroller to execute this command
         self.soc_mbox().execute().write(|w| w.execute(true));

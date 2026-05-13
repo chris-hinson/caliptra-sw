@@ -18,10 +18,10 @@ use caliptra_api::mailbox::{
     MailboxReqHeader, MailboxRespHeader, ProductionAuthDebugUnlockChallenge,
     ProductionAuthDebugUnlockReq, ProductionAuthDebugUnlockToken,
 };
-use caliptra_cfi_lib::{cfi_assert_eq_12_words, cfi_launder};
+use caliptra_cfi_lib::{cfi_assert_eq_12_words, cfi_assert_eq_8_words, cfi_launder};
 use caliptra_drivers::{
-    sha2_512_384::Sha2DigestOpTrait, Array4x12, Array4x16, AxiAddr, Dma, Ecc384, Ecc384PubKey,
-    Ecc384Result, Ecc384Scalar, Ecc384Signature, LEArray4x16, Mldsa87, Mldsa87PubKey,
+    sha2_512_384::Sha2DigestOpTrait, Array4x12, Array4x16, Array4x8, AxiAddr, Dma, Ecc384,
+    Ecc384PubKey, Ecc384Result, Ecc384Scalar, Ecc384Signature, LEArray4x16, Mldsa87, Mldsa87PubKey,
     Mldsa87Result, Mldsa87Signature, Sha2_512_384, Sha2_512_384Acc, ShaAccLockState, SocIfc,
     StreamEndianness, Trng,
 };
@@ -43,6 +43,7 @@ use zerocopy::IntoBytes;
 pub fn create_debug_unlock_challenge(
     trng: &mut Trng,
     soc_ifc: &SocIfc,
+    dma: &mut Dma,
     request: &ProductionAuthDebugUnlockReq,
 ) -> CaliptraResult<ProductionAuthDebugUnlockChallenge> {
     // Validate payload
@@ -58,13 +59,27 @@ pub fn create_debug_unlock_challenge(
 
     // Check if the debug level is valid.
     let dbg_level = request.unlock_level as u32;
-    if dbg_level > soc_ifc.debug_unlock_pk_hash_count() {
+    if dbg_level == 0 || dbg_level > soc_ifc.debug_unlock_pk_hash_count() {
         crate::cprintln!(
             "Invalid debug level: Received level: {}, Fuse PK Hash Count: {}",
             dbg_level,
             soc_ifc.debug_unlock_pk_hash_count()
         );
         Err(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_REQ)?;
+    }
+
+    // Reject request if the PK hash fuse for this level is zeroized.
+    // Check both all-0s (unprogrammed) and all-1s (zeroized).
+    let debug_auth_pk_offset =
+        soc_ifc.debug_unlock_pk_hash_offset(request.unlock_level as u32)? as u64;
+    let mci_base: AxiAddr = soc_ifc.mci_base_addr().into();
+    let debug_auth_pk_hash_base = mci_base + debug_auth_pk_offset;
+    let mut fuse_digest: [u32; 12] = [0; 12];
+    dma.read_buffer(debug_auth_pk_hash_base, &mut fuse_digest);
+    let digest = Array4x12::from(fuse_digest);
+    if digest == Array4x12::from([0xFFFF_FFFFu32; 12]) || digest == Array4x12::from([0u32; 12]) {
+        crate::cprintln!("Prod debug unlock disabled: PK hash fuse is zeroized/unprogrammed");
+        Err(CaliptraError::SS_DBG_UNLOCK_PROD_DISABLED)?;
     }
 
     let length = ((size_of::<ProductionAuthDebugUnlockChallenge>()
@@ -124,6 +139,17 @@ pub fn validate_debug_unlock_token(
         cfi_assert_eq_12_words(
             &Array4x12::from(token.challenge).0,
             &Array4x12::from(challenge.challenge).0,
+        );
+    }
+
+    // Check if the token is bound to this device.
+    if cfi_launder(token.unique_device_identifier) != challenge.unique_device_identifier {
+        crate::cprintln!("Unique device identifier mismatch");
+        Err(CaliptraError::SS_DBG_UNLOCK_PROD_INVALID_TOKEN_CHALLENGE)?;
+    } else {
+        cfi_assert_eq_8_words(
+            &Array4x8::from(token.unique_device_identifier).0,
+            &Array4x8::from(challenge.unique_device_identifier).0,
         );
     }
 
