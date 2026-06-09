@@ -21,7 +21,6 @@ use crate::print::HexBytes;
 use crate::rom_env::{RomEnv, RomEnvFips};
 #[cfg(feature = "cfi")]
 use caliptra_cfi_derive::cfi_impl_fn;
-use caliptra_cfi_lib::{cfi_assert, cfi_assert_bool, cfi_launder};
 use caliptra_common::{
     crypto::{Crypto, Ecc384KeyPair, MlDsaKeyPair, PubKey},
     keyids::{
@@ -38,7 +37,7 @@ use zerocopy::IntoBytes;
 use zeroize::Zeroize;
 
 /// Initialization Vector used by Deobfuscation Engine during UDS / field entropy decryption.
-const DOE_IV: Array4x4 = Array4xN::<4, 16>([0xfb10365b, 0xa1179741, 0xfba193a1, 0x0f406d7e]);
+pub const DOE_IV: Array4x4 = Array4xN::<4, 16>([0xfb10365b, 0xa1179741, 0xfba193a1, 0x0f406d7e]);
 
 /// Label used for HKDF-Extract (salt) and HKDF-Expand (info) when deriving the Stable Owner Root Key.
 const STABLE_OWNER_ROOT_KEY_LABEL: &[u8] = b"stable_owner_root_key";
@@ -81,6 +80,12 @@ impl InitDevIdLayer {
 
         // Derive Stable Owner Root Key from HEK seed (if enabled).
         Self::derive_stable_owner_root_key(env)?;
+
+        // The OCP LOCK flow requires the HEK seed to be extracted using the DOE.
+        // This must be done BEFORE we clear the DOE secrets below.
+        if env.soc_ifc.ocp_lock_enabled() {
+            env.doe.decrypt_hek_seed(&DOE_IV, KEY_ID_HEK_SEED)?;
+        }
 
         // Clear Deobfuscation Engine Secrets
         Self::clear_doe_secrets(env)?;
@@ -348,42 +353,15 @@ impl InitDevIdLayer {
         ecc_priv_key: KeyId,
         mldsa_keypair_seed: KeyId,
     ) -> CaliptraResult<(Ecc384KeyPair, MlDsaKeyPair)> {
-        let result = Crypto::ecc384_key_gen(
-            &mut env.ecc384,
-            &mut env.hmac,
-            &mut env.trng,
-            &mut env.key_vault,
+        cold_reset::derive_dice_key_pair(
+            env,
             cdi,
-            b"idevid_ecc_key",
             ecc_priv_key,
-        );
-        if cfi_launder(result.is_ok()) {
-            cfi_assert!(result.is_ok());
-        } else {
-            cfi_assert!(result.is_err());
-        }
-        let ecc_keypair = result?;
-
-        // Derive the MLDSA Key Pair.
-        let result = env.abr.with_mldsa87(|mut mldsa87| {
-            Crypto::mldsa87_key_gen(
-                &mut mldsa87,
-                &mut env.hmac,
-                &mut env.trng,
-                cdi,
-                b"idevid_mldsa_key",
-                mldsa_keypair_seed,
-            )
-        });
-        if cfi_launder(result.is_ok()) {
-            cfi_assert!(result.is_ok());
-        } else {
-            cfi_assert!(result.is_err());
-        }
-        let mldsa_keypair = result?;
-
-        report_boot_status(IDevIdKeyPairDerivationComplete.into());
-        Ok((ecc_keypair, mldsa_keypair))
+            mldsa_keypair_seed,
+            b"idevid_ecc_key",
+            b"idevid_mldsa_key",
+            IDevIdKeyPairDerivationComplete.into(),
+        )
     }
 
     /// Generate Local Device ID CSRs
@@ -478,7 +456,8 @@ impl InitDevIdLayer {
         let tbs = InitDevIdCsrTbsEcc384::new(&params);
 
         cprintln!(
-            "[idev] ECC Sign CSR w/ SUBJECT.KEYID = {}",
+            "[idev] Sign CSR {} SUBJECT.KEYID = {}",
+            "ECC",
             key_pair.priv_key as u8
         );
 
@@ -536,7 +515,8 @@ impl InitDevIdLayer {
         let tbs = InitDevIdCsrTbsMlDsa87::new(&params);
 
         cprintln!(
-            "[idev] MLDSA Sign CSR w/ SUBJECT.KEYID = {}",
+            "[idev] Sign CSR {} SUBJECT.KEYID = {}",
+            "MLDSA",
             key_pair.key_pair_seed as u8
         );
 

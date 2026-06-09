@@ -382,13 +382,10 @@ impl Aes {
         let mut buffer = [0u8; AES_BLOCK_SIZE_BYTES];
         buffer[..input.len()].copy_from_slice(input);
 
-        let ghash_state = if context.aad_len == 0 && context.buffer_len == 0 {
-            // Edge case where we have not actually done any AES operations,
-            // so the GHASH state should not be saved.
-            AesBlock::default()
-        } else {
-            self.save()
-        };
+        // We've processed at least one block. The GHASH accumulator in
+        // the hardware reflects that work and must be saved so a subsequent
+        // update/final restores it.
+        let ghash_state = self.save();
         self.zeroize_internal();
         Ok((
             written,
@@ -594,10 +591,10 @@ impl Aes {
 
             wait_for_idle(&aes);
 
-            // if we haven't actually written any AAD or input, then
-            // we can skip the restore operation.
-            // This avoids some edge cases in the hardware.
-            if aad_len == 0 && len == 0 {
+            // Nothing to restore until either AAD or a full block of text has
+            // been processed by the hardware. Issuing GcmPhase::Restore with a
+            // zero GHASH state corrupts subsequent tag computation.
+            if aad_len == 0 && (len as usize) < AES_BLOCK_SIZE_BYTES {
                 return Ok(());
             }
 
@@ -1486,6 +1483,23 @@ impl AesGcm {
         crate::kats::execute_gcm_kat(&mut aes, trng)?;
         crate::kats::execute_cmackdf_kat(&mut aes)?;
         Ok(Self { aes })
+    }
+
+    /// Construct an `AesGcm` driver without running KATs.
+    ///
+    /// Intended for the fake (emulation-only) ROM, which is not FIPS compliant
+    /// and skips KATs to reduce ROM footprint.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure this is never used in production firmware: the
+    /// resulting driver has not had its GCM or CMAC-KDF KATs executed, so any
+    /// FIPS guarantees about the AES engine are forfeit.
+    #[cfg(feature = "fake-rom")]
+    pub unsafe fn new_skip_kats(aes: AesReg, aes_clp: AesClpReg) -> Self {
+        Self {
+            aes: Aes::new_gcm(aes, aes_clp),
+        }
     }
 
     /// CMAC generation, Algorithm 6.2 from NIST SP 800-38B.

@@ -54,7 +54,6 @@ use caliptra_dpe_crypto::ecdsa::curve_384::EcdsaPub384;
 use caliptra_dpe_crypto::ecdsa::EcdsaPubKey;
 use caliptra_dpe_crypto::{Digest, PubKey};
 use caliptra_drivers::{
-    cprintln,
     hand_off::DataStore,
     pcr_log::{RT_FW_CURRENT_PCR, RT_FW_JOURNEY_PCR},
     sha2_512_384::Sha2DigestOpTrait,
@@ -196,6 +195,13 @@ impl Drivers {
         let hek_available = persistent_data.get().rom.ocp_lock_metadata.hek_available;
         let ocp_lock_context = OcpLockContext::new(&soc_ifc, &mut trng, hek_available)?;
 
+        // Run the ML-KEM-1024 KAT at startup. ROM does not run it (its KatsEnv
+        // has no ML-KEM engine), and `MlKem1024::new()` is constructed
+        // per-operation, so this is the only place it runs once during runtime
+        // startup, mirroring how `Aes::new()` runs the non-GCM AES KATs above.
+        let mut abr = Abr::new(AbrReg::new());
+        abr.with_ml_kem(|mut ml_kem| ml_kem.run_kats())?;
+
         Ok(Self {
             mbox: Mailbox::new(MboxCsr::new()),
             sha_acc: Sha512AccCsr::new(),
@@ -207,7 +213,7 @@ impl Drivers {
             sha3: Sha3::new(KmacReg::new()),
             hmac: Hmac::new(HmacReg::new()),
             ecc384: Ecc384::new(EccReg::new()),
-            abr: Abr::new(AbrReg::new()),
+            abr,
             lms: Lms::default(),
             trng,
             persistent_data,
@@ -235,7 +241,7 @@ impl Drivers {
             .init(&self.persistent_data, &mut self.trng)?;
         if self.persistent_data.get().fw.dpe.attestation_disabled.get() {
             DisableAttestationCmd::execute(self)
-                .map_err(|_| CaliptraError::RUNTIME_GLOBAL_EXCEPTION)?;
+                .map_err(|_| CaliptraError::RUNTIME_DISABLE_ATTESTATION_FAILED_RESET_FLOW)?;
         }
 
         let reset_reason = self.soc_ifc.reset_reason();
@@ -377,9 +383,8 @@ impl Drivers {
                         CaliptraError::RUNTIME_DPE_VALIDATION_FAILED.into(),
                     );
                 }
-                Err(e) => {
-                    cprintln!("{}", e.0);
-                    return Err(CaliptraError::RUNTIME_GLOBAL_EXCEPTION);
+                Err(_) => {
+                    return Err(CaliptraError::RUNTIME_DISABLE_ATTESTATION_FAILED_DPE_VALIDATION);
                 }
             }
         } else {
@@ -401,9 +406,8 @@ impl Drivers {
                     Ok(_) => {
                         caliptra_drivers::report_fw_error_non_fatal(e.into());
                     }
-                    Err(e) => {
-                        cprintln!("{}", e.0);
-                        return Err(CaliptraError::RUNTIME_GLOBAL_EXCEPTION);
+                    Err(_) => {
+                        return Err(CaliptraError::RUNTIME_DISABLE_ATTESTATION_FAILED_DPE_LIMITS);
                     }
                 }
             }
@@ -482,21 +486,10 @@ impl Drivers {
 
     /// Release MCU SRAM if MCU FW was previously loaded correctly
     fn release_mcu_sram(drivers: &mut Drivers) -> CaliptraResult<()> {
-        // Check if MCU previous Cold-Reset was successful.
+        // Check if MCU previous Cold-Reset or Update-Reset was successful.
         let mcu_firmware_loaded = drivers.persistent_data.get().fw.mcu_firmware_loaded;
-        if mcu_firmware_loaded == McuFwStatus::NotLoaded.into() {
-            cprintln!("[rt-warm-reset] Warning: Prev Cold Reset failed, not releasing MCU SRAM");
-        }
-
-        // Check if MCU previous Update-Reset, if any, was successful.
-        if mcu_firmware_loaded == McuFwStatus::HitlessUpdateStarted.into() {
-            cprintln!(
-                "[rt-warm-reset] Warning: Prev Hitless Update Reset failed, not releasing MCU SRAM"
-            );
-        }
 
         cfi_assert_eq(mcu_firmware_loaded, McuFwStatus::Loaded.into());
-        cprintln!("[rt-warm-reset] MCU FW is loaded in SRAM");
         Self::request_mcu_reset(drivers, McuResetReason::FwBoot);
 
         Ok(())
@@ -526,9 +519,8 @@ impl Drivers {
 
                     caliptra_drivers::report_fw_error_non_fatal(error.into());
                 }
-                Err(e) => {
-                    cprintln!("{}", e.0);
-                    return Err(CaliptraError::RUNTIME_GLOBAL_EXCEPTION);
+                Err(_) => {
+                    return Err(CaliptraError::RUNTIME_DISABLE_ATTESTATION_FAILED_PCR_VALIDATION);
                 }
             }
         } else {

@@ -26,7 +26,7 @@ use anyhow::Result;
 use caliptra_api::SocManager;
 use caliptra_emu_bus::{Bus, BusError, BusMmio, Device, Event, EventData, RecoveryCommandCode};
 use caliptra_emu_types::{RvAddr, RvData, RvSize};
-use caliptra_hw_model_types::HexSlice;
+use caliptra_hw_model_types::{HexSlice, DEFAULT_FIELD_ENTROPY, DEFAULT_UDS_SEED};
 use caliptra_image_types::FwVerificationPqcKeyType;
 use sensitive_mmio::{SensitiveMmio, SensitiveMmioArgs};
 use std::io::Write;
@@ -225,7 +225,7 @@ pub struct Mci {
 }
 
 impl Mci {
-    pub fn regs(&self) -> caliptra_registers::mci::RegisterBlock<BusMmio<FpgaRealtimeBus<'_>>> {
+    pub fn regs<'a>(&self) -> caliptra_registers::mci::RegisterBlock<BusMmio<FpgaRealtimeBus<'a>>> {
         unsafe {
             caliptra_registers::mci::RegisterBlock::new_with_mmio(
                 EMULATOR_MCI_ADDR as *mut u32,
@@ -573,6 +573,15 @@ impl ModelFpgaSubsystem {
         }
         for i in 0..16 {
             self.wrapper.regs().cptra_csr_hmac_key[i].set(csr_hmac_key[i]);
+        }
+
+        // Write UDS seed and field entropy to strap registers so that
+        // set_secrets_valid(true) gives DOE deterministic values.
+        for (i, &val) in DEFAULT_UDS_SEED.iter().enumerate() {
+            self.wrapper.regs().cptra_obf_uds_seed[i].set(val);
+        }
+        for (i, &val) in DEFAULT_FIELD_ENTROPY.iter().enumerate() {
+            self.wrapper.regs().cptra_obf_field_entropy[i].set(val);
         }
 
         // Use strap UDS and FE for deterministic IDevID on FPGA when requested
@@ -1804,6 +1813,10 @@ impl HwModel for ModelFpgaSubsystem {
         }
     }
 
+    fn mci(&mut self) -> caliptra_registers::mci::RegisterBlock<Self::TMmio<'_>> {
+        self.mmio.mci().unwrap().regs()
+    }
+
     fn step(&mut self) {
         self.handle_log();
         self.handle_flash();
@@ -2043,6 +2056,10 @@ impl HwModel for ModelFpgaSubsystem {
             self.soc_ifc()
                 .cptra_dbg_manuf_service_reg()
                 .write(|_| boot_params.initial_dbg_manuf_service_reg);
+        }
+
+        if let Some(reg) = boot_params.initial_ss_strap_generic_2 {
+            self.soc_ifc().ss_strap_generic().at(2).write(|_| reg);
         }
 
         let gpio = &self.wrapper.regs().mci_generic_input_wires[1];
@@ -2414,8 +2431,20 @@ impl HwModel for ModelFpgaSubsystem {
         Ok(mci_base_addr + 0xc00000)
     }
 
-    fn write_payload_to_ss_staging_area(&mut self, payload: &[u8]) -> Result<u64, ModelError> {
-        let staging_offset = 0xc00000_usize / 4; // Convert to u32 offset since mci.ptr is *mut u32
+    fn write_payload_to_ss_staging_area(
+        &mut self,
+        payload: &[u8],
+        offset: usize,
+    ) -> Result<u64, ModelError> {
+        assert!(
+            offset % 4 == 0,
+            "Staging area offset must be 4-byte aligned"
+        );
+        assert!(
+            payload.len() % 4 == 0,
+            "Payload length must be a multiple of 4"
+        );
+        let staging_offset = (0xc00000_usize + offset) / 4; // Convert to u32 offset since mci.ptr is *mut u32
         let staging_ptr = unsafe { self.mmio.mci().unwrap().ptr.add(staging_offset) };
 
         // Write complete u32 chunks
@@ -2432,12 +2461,20 @@ impl HwModel for ModelFpgaSubsystem {
             }
         }
 
-        // Return the physical address of the staging area
-        self.staging_physical_address()
+        // Return the physical address of the staging area + offset
+        Ok(self.staging_physical_address()? + offset as u64)
     }
 
-    fn read_payload_from_ss_staging_area(&mut self, len: usize) -> Result<Vec<u8>, ModelError> {
-        let staging_offset = 0xc00000_usize / 4; // Convert to u32 offset since mci.ptr is *mut u32
+    fn read_payload_from_ss_staging_area(
+        &mut self,
+        len: usize,
+        offset: usize,
+    ) -> Result<Vec<u8>, ModelError> {
+        assert!(
+            offset % 4 == 0,
+            "Staging area offset must be 4-byte aligned"
+        );
+        let staging_offset = (0xc00000_usize + offset) / 4; // Convert to u32 offset since mci.ptr is *mut u32
         let staging_ptr = unsafe { self.mmio.mci().unwrap().ptr.add(staging_offset) };
 
         let mut result = Vec::with_capacity(len);

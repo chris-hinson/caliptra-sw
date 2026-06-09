@@ -235,19 +235,19 @@ jobs:
           ref: ${{ inputs.branch }}
 
       - name: 'Download Test Binaries Artifact'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: caliptra-test-binaries${{ inputs.artifact-suffix }}
           path: /tmp/caliptra-test-binaries.sqsh
 
       - name: 'Download Test Firmware Artifact'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: caliptra-test-firmware${{ inputs.artifact-suffix }}
           path: /tmp/caliptra-test-firmware
 
       - name: 'Download Bitstream'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: caliptra-bitstream${{ inputs.artifact-suffix }}
           path: /tmp/caliptra-bitstream
@@ -293,7 +293,8 @@ jobs:
             VARS+=" CPTRA_CI_ROM_VERSION="${{ inputs.rom-version }}""
             # Map rom-version to the expected FIPS test ROM version
             case "${{ inputs.rom-version }}" in
-              "2.1") VARS+=" FIPS_TEST_ROM_EXP_VERSION=2_1_0" ;;
+              "2.1.0") VARS+=" FIPS_TEST_ROM_EXP_VERSION=2_1_0" ;;
+              "2.1.1") VARS+=" FIPS_TEST_ROM_EXP_VERSION=2_1_1" ;;
               *) echo "Unknown rom-version ${{ inputs.rom-version }} for FIPS_TEST_ROM_EXP_VERSION"; exit 1 ;;
             esac
           fi
@@ -345,7 +346,7 @@ jobs:
           ref: ${{ inputs.branch }}
 
       - name: 'Download test results'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: caliptra-test-results${{ inputs.artifact-suffix }}-*
           merge-multiple: true

@@ -17,6 +17,7 @@ mod activate_firmware;
 mod attested_csr;
 mod authorize_and_stash;
 mod capabilities;
+mod certify_key_chunks;
 mod certify_key_extended;
 mod cryptographic_mailbox;
 mod debug_unlock;
@@ -60,7 +61,7 @@ use caliptra_cfi_lib::{
     cfi_assert, cfi_assert_bool, cfi_assert_eq, cfi_assert_ne, cfi_launder, CfiCounter,
 };
 use caliptra_common::cfi_check;
-use caliptra_common::mailbox_api::{ExternalMailboxCmdReq, MailboxReqHeader};
+use caliptra_common::mailbox_api::{ExternalMailboxCmdReq, MailboxReqHeader, MailboxRespHeader};
 use caliptra_dpe::State;
 use caliptra_dpe_crypto::ecdsa::curve_384::EcdsaPub384;
 use caliptra_dpe_crypto::ecdsa::EcdsaPubKey;
@@ -119,6 +120,7 @@ pub use caliptra_dpe::{
 use caliptra_dpe::{dpe_instance::DpeEnv, support::Support};
 use caliptra_drivers::{okref, AxiAddr, CaliptraError, CaliptraResult, ResetReason};
 use caliptra_registers::mbox::enums::MboxStatusE;
+use core::mem::size_of;
 
 use crate::{
     dice::GetRtAliasCertCmd,
@@ -189,12 +191,12 @@ fn enter_idle(drivers: &mut Drivers) {
     caliptra_cpu::csr::mpmc_halt_and_enable_interrupts();
 }
 
-fn human_readable_command(bytes: &[u8]) -> Option<&str> {
+fn human_readable_command(bytes: &[u8]) -> &str {
     if bytes.len() == 4 && bytes.iter().all(|c| c.is_ascii_alphanumeric()) {
         // Safety: we just checked that all bytes are ASCII.
-        Some(unsafe { core::str::from_utf8_unchecked(bytes) })
+        unsafe { core::str::from_utf8_unchecked(bytes) }
     } else {
-        None
+        "?"
     }
 }
 
@@ -244,20 +246,12 @@ fn handle_command(drivers: &mut Drivers) -> CaliptraResult<MboxStatusE> {
     let cmd_bytes = req_packet.as_bytes()?;
     let cmd_id = req_packet.cmd;
 
-    if let Some(ascii) = human_readable_command(&cmd_id.to_be_bytes()) {
-        cprintln!(
-            "[rt] Received command=0x{:x} ({}), len={}",
-            req_packet.cmd,
-            ascii,
-            req_packet.payload().len()
-        );
-    } else {
-        cprintln!(
-            "[rt] Received command=0x{:x}, len={}",
-            req_packet.cmd,
-            req_packet.payload().len()
-        );
-    }
+    cprintln!(
+        "[rt] Received command=0x{:x} ({}), len={}",
+        req_packet.cmd,
+        human_readable_command(&cmd_id.to_be_bytes()),
+        req_packet.payload().len()
+    );
 
     // Check for EXTERNAL_MAILBOX_CMD and handle FIRMWARE_VERIFY specially
     if drivers.soc_ifc.subsystem_mode()
@@ -322,9 +316,17 @@ fn execute_command(
         CommandId::INVOKE_DPE_ECC384 => InvokeDpeCmd::execute_ecc384(drivers, cmd_bytes, resp),
         CommandId::INVOKE_DPE_MLDSA87 => InvokeDpeCmd::execute_mldsa87(drivers, cmd_bytes, resp),
         CommandId::ECDSA384_SIGNATURE_VERIFY => {
-            caliptra_common::verify::EcdsaVerifyCmd::execute(&mut drivers.ecc384, cmd_bytes)
+            caliptra_common::verify::EcdsaVerifyCmd::execute(&mut drivers.ecc384, cmd_bytes)?;
+            let resp = mutrefbytes::<MailboxRespHeader>(resp)?;
+            resp.fips_status = MailboxRespHeader::FIPS_STATUS_NOT_APPROVED_USER_SUPPLIED_DIGEST;
+            Ok(size_of::<MailboxRespHeader>())
         }
-        CommandId::LMS_SIGNATURE_VERIFY => LmsVerifyCmd::execute(drivers, cmd_bytes),
+        CommandId::LMS_SIGNATURE_VERIFY => {
+            LmsVerifyCmd::execute(drivers, cmd_bytes)?;
+            let resp = mutrefbytes::<MailboxRespHeader>(resp)?;
+            resp.fips_status = MailboxRespHeader::FIPS_STATUS_NOT_APPROVED_USER_SUPPLIED_DIGEST;
+            Ok(size_of::<MailboxRespHeader>())
+        }
         CommandId::MLDSA87_SIGNATURE_VERIFY => drivers.abr.with_mldsa87(|mut mldsa| {
             caliptra_common::verify::MldsaVerifyCmd::execute(&mut mldsa, cmd_bytes)
         }),
@@ -355,6 +357,9 @@ fn execute_command(
             GetRtAliasCertCmd::execute(drivers, AlgorithmType::Mldsa87, resp)
         }
         CommandId::ADD_SUBJECT_ALT_NAME => AddSubjectAltNameCmd::execute(drivers, cmd_bytes),
+        CommandId::CERTIFY_KEY_CHUNKS => {
+            certify_key_chunks::CertifyKeyChunksCmd::execute(drivers, cmd_bytes, resp)
+        }
         CommandId::CERTIFY_KEY_EXTENDED_ECC384 => {
             CertifyKeyExtendedCmd::execute_ecc384(drivers, cmd_bytes, resp)
         }
@@ -539,7 +544,6 @@ fn execute_command(
             drivers.debug_unlock.handle_token(
                 &mut drivers.soc_ifc,
                 &mut drivers.sha2_512_384,
-                &mut drivers.sha2_512_384_acc,
                 &mut drivers.ecc384,
                 &mut mldsa,
                 &mut drivers.dma,
@@ -620,22 +624,13 @@ fn handle_external_mailbox_cmd(
     // FIRMWARE_VERIFY is handled earlier in handle_command() before this function is called
     cfi_assert_ne(cmd_id, CommandId::FIRMWARE_VERIFY.into());
 
-    if let Some(ascii) = human_readable_command(&cmd_id.to_be_bytes()) {
-        cprintln!(
-            "[rt] Loading external command=0x{:x} ({}), len={} from AXI address: 0x{:x}",
-            external_cmd.command_id,
-            ascii,
-            external_cmd.command_size,
-            u64::from(axi_addr),
-        );
-    } else {
-        cprintln!(
-            "[rt] Loading external command=0x{:x}, len={} from AXI address: 0x{:x}",
-            external_cmd.command_id,
-            external_cmd.command_size,
-            u64::from(axi_addr),
-        );
-    }
+    cprintln!(
+        "[rt] Loading external command=0x{:x} ({}), len={} from AXI address: 0x{:x}",
+        external_cmd.command_id,
+        human_readable_command(&cmd_id.to_be_bytes()),
+        external_cmd.command_size,
+        u64::from(axi_addr),
+    );
     // check that the command is not too large
     if external_cmd.command_size as usize > caliptra_common::mailbox_api::MAX_REQ_SIZE {
         return Err(CaliptraError::RUNTIME_MAILBOX_INVALID_PARAMS);
@@ -663,21 +658,6 @@ fn handle_external_mailbox_cmd(
         &cmd_bytes[core::mem::size_of_val(&req_hdr.chksum)..],
     ) {
         return Err(CaliptraError::RUNTIME_INVALID_CHECKSUM);
-    }
-
-    if let Some(ascii) = human_readable_command(&cmd_id.to_be_bytes()) {
-        cprintln!(
-            "[rt] Received external command=0x{:x} ({}), len={}",
-            cmd_id,
-            ascii,
-            cmd_bytes.len()
-        );
-    } else {
-        cprintln!(
-            "[rt] Received external command=0x{:x}, len={}",
-            cmd_id,
-            cmd_bytes.len()
-        );
     }
 
     execute_command(drivers, cmd_id, cmd_bytes)
@@ -719,14 +699,12 @@ pub fn handle_mailbox_commands(drivers: &mut Drivers) -> CaliptraResult<()> {
             cfi_check!(result);
             match result {
                 Ok(_) => {
-                    cprintln!("Disabled attestation due to cmd busy during warm reset");
                     caliptra_drivers::report_fw_error_non_fatal(
                         CaliptraError::RUNTIME_CMD_BUSY_DURING_WARM_RESET.into(),
                     );
                 }
-                Err(e) => {
-                    cprintln!("{}", e.0);
-                    return Err(CaliptraError::RUNTIME_GLOBAL_EXCEPTION);
+                Err(_) => {
+                    return Err(CaliptraError::RUNTIME_DISABLE_ATTESTATION_FAILED_WARM_RESET);
                 }
             }
         }

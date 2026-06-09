@@ -26,6 +26,7 @@ v2.1:
 * [External mailbox commands](#external-mailbox-cmd)
 * [Encrypted firmware support](#encrypted-firmware-support-21-subsystem-mode-only)
 * [OCP LOCK v1.0 commands](#mailbox-commands-ocp-lock-v10)
+* `ECDSA384_SIGNATURE_VERIFY` and `LMS_SIGNATURE_VERIFY` return a non-approved FIPS status because the caller supplies the digest.
 
 
 ## Spec Opens
@@ -51,7 +52,8 @@ When ROM receives the `RI_DOWNLOAD_ENCRYPTED_FIRMWARE` command instead of `RI_DO
 3. The MCU ROM can then:
    - Import an AES key using `CM_IMPORT`
    - Decrypt the firmware in-place using `CM_AES_GCM_DECRYPT_DMA`
-   - Send `CM_ACTIVATE_FIRMWARE` to activate the decrypted MCU firmware
+   - Send `ACTIVATE_FIRMWARE` with the `INITIAL_ACTIVATE` flag set, so Runtime publishes `FW_EXEC_CTRL[MCU]` without performing the hitless-update reload/verify dance (the firmware was already integrity-checked end-to-end by `RI_DOWNLOAD_ENCRYPTED_FIRMWARE` and `CM_AES_GCM_DECRYPT_DMA`). See [`ACTIVATE_FIRMWARE`](#activate_firmware) for the gating rules.
+   - Trigger a warm reset; MCI releases MCU once `FW_EXEC_CTRL[MCU]` is asserted, and MCU FwBoot jumps into the decrypted firmware.
 
 The `CM_AES_GCM_DECRYPT_DMA` command is intended to be used for the `EncryptedFirmware` boot mode and performs a SHA384 integrity check of the ciphertext before decryption, but can be used to decrypt other images as well in any boot mode.
 
@@ -735,7 +737,7 @@ Command Code: `0x4543_5632` ("ECV2")
 | **Name**      | **Type** | **Description**
 | --------      | -------- | ---------------
 | chksum        | u32      | Checksum over other output arguments, computed by Caliptra. Little endian.
-| fips\_status  | u32      | Indicates if the command is FIPS approved or an error.
+| fips\_status  | u32      | `FIPS_NOT_APPROVED_USER_SUPPLIED_DIGEST`, because the caller supplies the digest.
 
 ### LMS\_SIGNATURE\_VERIFY
 
@@ -776,7 +778,7 @@ Command Code: `0x4C4D_5632` ("LMV2")
 | **Name**    | **Type** | **Description**
 | --------    | -------- | ---------------
 | chksum      | u32      | Checksum over other output arguments, computed by Caliptra. Little endian.
-| fips\_status | u32      | Indicates if the command is FIPS approved or an error.
+| fips\_status | u32      | `FIPS_NOT_APPROVED_USER_SUPPLIED_DIGEST`, because the caller supplies the digest.
 
 ### MLDSA87_SIGNATURE_VERIFY
 
@@ -1351,6 +1353,34 @@ Command Code: `0x434B_584D` ("CKXM")
 | size               | u32       | The size of the response in the certify\_key\_resp field.                  |
 | certify\_key\_resp | u8[25152] | Certify Key Response.                                                      |
 
+### CERTIFY\_KEY\_CHUNKS
+
+Invokes a DPE `CertifyKey` command (ML-DSA-87) and returns the response in chunks. This is useful when the DPE response (which contains a certificate or CSR) is larger than the mailbox size or larger than the caller can easily consume.
+
+Command Code: `0x434B_4348` ("CKCH")
+
+*Table: `CERTIFY_KEY_CHUNKS` input arguments*
+
+| **Name**          | **Type** | **Description**                                                                       |
+| ----------------- | -------- | ------------------------------------------------------------------------------------- |
+| chksum            | u32      | Checksum over other input arguments, computed by the caller. Little endian.           |
+| flags             | u32      | Flags (reserved).                                                                     |
+| reserved          | u32      | Reserved.                                                                             |
+| max\_size         | u32      | The maximum length of the chunk the caller wants to receive. If 0, defaults to 15360. |
+| offset            | u32      | Offset into the full CertifyKey response to read from.                                |
+| certify\_key\_req | u8[72]   | The serialized DPE `CertifyKey` command.                                              |
+
+*Table: `CERTIFY_KEY_CHUNKS` output arguments*
+
+| **Name**           | **Type**  | **Description**                                                            |
+| ------------------ | --------- | -------------------------------------------------------------------------- |
+| chksum             | u32       | Checksum over other output arguments, computed by Caliptra. Little endian. |
+| fips\_status       | u32       | Indicates if the command is FIPS approved or an error.                     |
+| context\_handle    | u8[16]    | The new DPE context handle returned by the `CertifyKey` command.           |
+| chunk\_len         | u32       | The length of the chunk returned in `certify_key_resp`.                    |
+| remaining          | u32       | The number of bytes remaining in the full response after this chunk.       |
+| certify\_key\_resp | u8[15360] | The chunk of the DPE `CertifyKey` response.                                |
+
 ### SET_AUTH_MANIFEST
 
 The SoC uses this command and `SET_IMAGE_METADTA` to program an image manifest for Manifest-Based Image Authorization to Caliptra. In response to these commands, the Caliptra Runtime will verify the manifest by authenticating the public keys and in turn using them to authenticate the IMC. On successful verification, the Runtime will store the IMEs into DCCM for future use.
@@ -1511,6 +1541,41 @@ Command Code: `0x4143_5446` ("ACTF")
 | count          | u32            | Number of image_ids to activate. Item count of image_ids array parameter |
 | mcu_image_size | u32            | Size of MCU image, if included in the activation |
 | image_ids      | Array of u8[4] | Array of Image ids in little-endian format                           |
+| flags          | u32            | Optional flags (see below). Caliptra runtime 2.1.1+ only.                  |
+
+*Flags*
+
+| **Bit** | **Name**          | **Description**                                                                                                          |
+| ------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| 0       | `INITIAL_ACTIVATE`| First-time MCU activation after the encrypted-boot flow. Caliptra runtime 2.1.1+ only. See below. |
+
+Unknown flag bits are rejected with `RUNTIME_MAILBOX_INVALID_PARAMS`.
+
+`INITIAL_ACTIVATE` is used exclusively by MCU ROM at the tail of the
+`EncryptedFirmware` boot flow. MCU ROM has already loaded firmware into MCU
+SRAM via `RI_DOWNLOAD_ENCRYPTED_FIRMWARE` and decrypted it in place via
+`CM_AES_GCM_DECRYPT_DMA`. When this flag is set, Caliptra Runtime:
+
+- Skips the hitless-update steps (set `RESET_REASON.FwHitlessUpd`, clear
+  `FW_EXEC_CTRL`, wait for MCU reset request and reset assertion, DMA-reload
+  from staging, re-`AuthorizeAndStash`).
+- Just publishes `FW_EXEC_CTRL[MCU]` (and any other requested bits) so that
+  MCI's `BOOT_RST_MCU` state releases MCU from reset on the next warm reset
+  that MCU ROM triggers.
+
+Caliptra Runtime only honors `INITIAL_ACTIVATE` when **all** of the following
+are true; otherwise the command fails with `IMAGE_VERIFIER_ACTIVATION_FAILED`:
+
+1. The MCU image bit is included in the activation request.
+2. The boot mode set by ROM is `EncryptedFirmware` (i.e., ROM received
+   `RI_DOWNLOAD_ENCRYPTED_FIRMWARE`).
+3. `FW_EXEC_CTRL[MCU]` is currently `0` — this is an initial activation,
+   not a hitless update masquerading as one.
+
+Together, these checks ensure that the MCU SRAM contents are
+integrity-protected end-to-end (ciphertext digest verified during recovery;
+GCM tag verified during `CM_AES_GCM_DECRYPT_DMA`) before Caliptra releases
+MCU to execute them.
 
 *Table: `ACTIVATE_FIRMWARE` output arguments*
 
@@ -3093,15 +3158,15 @@ chksum field.
 
 ## FIPS status
 
-For every command, the firmware responds with a FIPS status of FIPS approved. There is
-currently no use case for any other responses or error values.
+For successful commands, the firmware responds with a FIPS status indicating whether the service is FIPS approved. A non-approved status is not a command error.
 
 *Table: FIPS status codes*
 
 | **Name**        | **Value**                   | Description                                         |
 | --------------- | --------------------------- | --------------------------------------------------- |
 | `FIPS_APPROVED` | `0x0000_0000`               | Status of command is FIPS approved                  |
-| `RESERVED`      | `0x0000_0001 - 0xFFFF_FFFF` | Other values reserved, will not be sent by Caliptra |
+| `FIPS_NOT_APPROVED_USER_SUPPLIED_DIGEST` | `0x5553_5244` | Command is not FIPS approved because the caller supplied the digest instead of the raw message |
+| `RESERVED`      | `0x0000_0002 - 0xFFFF_FFFF` | Other values reserved, will not be sent by Caliptra |
 
 ## Runtime Firmware updates
 

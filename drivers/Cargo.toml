@@ -46,7 +46,9 @@ ocp-lock = ["caliptra-hw-model/ocp-lock"]
 itrng = ["caliptra-hw-model/itrng"]
 verilator = ["caliptra-hw-model/verilator"]
 cfi = []
+fake-rom = []
 fips-test-hooks = []
+cavp-test-harness = []
 
 [dev-dependencies]
 caliptra-api.workspace = true

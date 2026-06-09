@@ -372,7 +372,8 @@ pub fn run_test_suite(
 /// Download a bitstream from a Caliptra bitstream manifest
 pub fn download_bitstream_pdi<P: AsRef<Path>>(target_host: &str, manifest: P) -> Result<()> {
     // Assumes bitstream file is placed in the current directory.
-    let bitstream = bitstream_downloader::download_bitstream(manifest.as_ref())?;
+    let rt = tokio::runtime::Runtime::new()?;
+    let bitstream = rt.block_on(bitstream_downloader::download_bitstream(manifest.as_ref()))?;
 
     rsync_file(
         target_host,
@@ -412,14 +413,18 @@ pub fn build_caliptra_firmware(caliptra_workspace: &Path, fw_id: Option<&str>) -
     Ok(())
 }
 
-pub fn build_mcu_rom(mcu_rev: &str) -> Result<()> {
-    let mcu_dir = "/tmp/caliptra-mcu-sw";
-    run_command_host(&format!(
-        "[ -d {mcu_dir} ] || git clone https://github.com/chipsalliance/caliptra-mcu-sw {mcu_dir}"
-    ))?;
-    run_command_host(&format!(
-        "cd {mcu_dir} && git fetch origin {mcu_rev} && git reset --hard {mcu_rev} && git submodule update --init --recursive"
-    ))?;
+pub fn build_mcu_rom(mcu_rev: &str, mcu_path: Option<&str>) -> Result<()> {
+    let mcu_dir = mcu_path.unwrap_or("/tmp/caliptra-mcu-sw");
+
+    if mcu_path.is_none() {
+        run_command_host(&format!(
+            "[ -d {mcu_dir} ] || git clone https://github.com/chipsalliance/caliptra-mcu-sw {mcu_dir}"
+        ))?;
+        run_command_host(&format!(
+            "cd {mcu_dir} && git fetch origin {mcu_rev} && git reset --hard {mcu_rev} && git submodule update --init --recursive"
+        ))?;
+    }
+
     run_command_host(&format!(
         "cd {mcu_dir} && cargo xtask-fpga rom-build --platform fpga --features core_test"
     ))?;
